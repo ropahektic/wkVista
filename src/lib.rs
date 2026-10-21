@@ -67,7 +67,7 @@ mod dll {
                 crate::log::line(&format!("full-colour maps unavailable: {e}"));
             }
             match crate::present::install() {
-                Ok(()) => crate::log::line("true colour: Direct3D 9 Present hooked (shown when WA's renderer is a Direct3D 9 option)"),
+                Ok(()) => crate::log::line("true colour: WA's Direct3D 9 backends hooked (used when WA's renderer is a Direct3D 9 option)"),
                 Err(e) => crate::log::line(&format!("true colour unavailable: {e}")),
             }
         }

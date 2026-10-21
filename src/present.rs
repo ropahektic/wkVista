@@ -1,13 +1,21 @@
-//! True colour output: wkVista's own RGBA frame shown through WA's Direct3D 9 device (WA's
-//! renderer set to one of its Direct3D 9 options). In game, at WA's `Present`, the frame is
-//! copied into WA's back buffer (StretchRect, point sampling), so WA's own picture of that frame
-//! is replaced inside WA's swap chain: no window of our own, no other API. WA keeps its window,
-//! fullscreen, resolution and device resets; the frontend is untouched.
+//! True colour output, native: wkVista's own RGBA frame shown by WA's Direct3D 9 backend in
+//! place of WA's palette pass (WA's renderer set to one of its Direct3D 9 options).
 //!
-//! The device's functions are found on a throwaway device (every Direct3D 9 device shares
-//! them), so it works however and whenever WA creates its own. Device methods by vtable slot:
-//! 16 Reset, 17 Present, 18 GetBackBuffer, 34 StretchRect, 36 CreateOffscreenPlainSurface;
-//! a surface: 13 LockRect, 14 UnlockRect; any COM object: 2 Release.
+//! WA ends a frame with RenderContext::FlushRender (vtable 0x662EC8 slot 13, 0x5A26C0), which
+//! calls its backend's "show frame" (slot 12; ECX the backend, EDX the result, the 8-bit
+//! framebuffer; ret 4) and then presents. In the Direct3D 9 backends (vtables 0x6767B0 software
+//! palette, 0x6767F8 shader palette; the device at +0x40) slot 12 (0x59CB30 / 0x59CDE0) checks
+//! the device (TestCooperativeLevel, a reset when lost), uploads the 8-bit frame and the
+//! palette, and draws them as one quad through the palette lookup. In game, with a frame of
+//! wkVista's and the device fine, that step is wkVista's: its frame goes into the back buffer
+//! (StretchRect, point sampling) and the result is WA's success code (0x8AC8B4); WA's upload and
+//! palette pass don't run. Otherwise (the frontend, a lost device, true colour off) WA's own
+//! step runs. WA keeps its window, fullscreen, resolution and resets.
+//!
+//! Device methods by vtable slot: 3 TestCooperativeLevel, 16 Reset, 18 GetBackBuffer,
+//! 34 StretchRect, 36 CreateOffscreenPlainSurface; a surface: 12 GetDesc, 13 LockRect,
+//! 14 UnlockRect; any COM object: 2 Release. Reset is hooked (found on a throwaway device: every
+//! Direct3D 9 device shares the functions) to free wkVista's surface first.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -35,8 +43,11 @@ static SURFACE_DEV: AtomicUsize = AtomicUsize::new(0);
 static SURFACE_SIZE: Mutex<(u32, u32)> = Mutex::new((0, 0));
 static LOGGED: AtomicBool = AtomicBool::new(false);
 
-static mut O_PRESENT: usize = 0;
 static mut O_RESET: usize = 0;
+static mut O_SHOW_SW: usize = 0;
+static mut O_SHOW_SH: usize = 0;
+/// every Direct3D 9 device's vtable (from the throwaway device): WA's device is checked to be one
+static DEVICE_VT: AtomicUsize = AtomicUsize::new(0);
 
 type Hr = i32;
 
@@ -93,15 +104,24 @@ pub fn install() -> Result<(), String> {
             DestroyWindow(hwnd);
             return Err(format!("throwaway device: {hr:#x}"));
         }
-        let (present, reset) = (vt(dev, 17), vt(dev, 16));
+        let reset = vt(dev, 16);
+        DEVICE_VT.store(*(dev as *const usize), Ordering::Relaxed);
         release(dev);
         release(d3d);
         DestroyWindow(hwnd);
-        for (target, det, orig) in [(present, h_present as *mut c_void, &raw mut O_PRESENT), (reset, h_reset as *mut c_void, &raw mut O_RESET)] {
+        // WA's Direct3D 9 backends' "show frame" (slot 12 of 0x6767B0 / 0x6767F8)
+        let base = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) as usize;
+        let rb = |va: usize| va.wrapping_add(base.wrapping_sub(0x40_0000));
+        let (sw, sh) = (*(rb(0x6767B0) as *const usize).add(12), *(rb(0x6767F8) as *const usize).add(12));
+        if (sw, sh) != (rb(0x59CB30), rb(0x59CDE0)) {
+            return Err(format!("WA's Direct3D 9 backends are not as in WA 3.8.1 ({sw:#x}, {sh:#x})"));
+        }
+        let hooks = [(reset, h_reset as *mut c_void, &raw mut O_RESET), (sw, t_show_sw as *mut c_void, &raw mut O_SHOW_SW), (sh, t_show_sh as *mut c_void, &raw mut O_SHOW_SH)];
+        for &(target, det, orig) in &hooks {
             let tramp = minhook::MinHook::create_hook(target as *mut c_void, det).map_err(|e| format!("hook {target:#x}: {e:?}"))?;
             *orig = tramp as usize;
         }
-        for target in [present, reset] {
+        for &(target, _, _) in &hooks {
             minhook::MinHook::enable_hook(target as *mut c_void).map_err(|e| format!("enable {target:#x}: {e:?}"))?;
         }
     }
@@ -153,7 +173,7 @@ unsafe fn draw(dev: usize) -> Result<(), String> {
         let mut desc = [0u32; 8];
         let gd: extern "system" fn(usize, *mut u32) -> Hr = std::mem::transmute(vt(bb, 12));
         gd(bb, desc.as_mut_ptr());
-        log::line(&format!("true colour: drawing at Present, device {dev:#x}, back buffer {}x{} format {}, frame {}x{}", desc[6], desc[7], desc[0], f.w, f.h));
+        log::line(&format!("true colour: WA's palette pass replaced, device {dev:#x}, back buffer {}x{} format {}, frame {}x{}", desc[6], desc[7], desc[0], f.w, f.h));
     }
     let sr: extern "system" fn(usize, usize, *const c_void, usize, *const c_void, u32) -> Hr = std::mem::transmute(vt(dev, 34));
     let hr = sr(dev, s, std::ptr::null(), bb, std::ptr::null(), 1);
@@ -166,17 +186,78 @@ unsafe fn draw(dev: usize) -> Result<(), String> {
 
 static FAILED: AtomicBool = AtomicBool::new(false);
 
-extern "system" fn h_present(dev: usize, src: *const c_void, dst: *const c_void, wnd: *mut c_void, dirty: *const c_void) -> Hr {
-    if SHOW.load(Ordering::Relaxed) && crate::hooks::in_game() && !FAILED.load(Ordering::Relaxed) {
-        if let Err(e) = std::panic::catch_unwind(|| unsafe { draw(dev) }).unwrap_or_else(|_| Err("panic".into())) {
-            // off for this run: WA's own picture is shown
+/// The registers a "show frame" thunk saved (pushad), then the return address and the argument
+#[repr(C)]
+pub struct Regs {
+    edi: u32,
+    esi: u32,
+    ebp: u32,
+    esp: u32,
+    ebx: u32,
+    edx: u32,
+    ecx: u32,
+    eax: u32,
+}
+
+/// A backend's "show frame" thunk: `h_show`; 1: wkVista showed its frame (`ret 4`, EAX the
+/// result), 0: WA's own runs
+macro_rules! show_thunk {
+    ($name:ident, $orig:ident) => {
+        #[unsafe(naked)]
+        unsafe extern "C" fn $name() {
+            core::arch::naked_asm!(
+                "pushad",
+                "push esp",
+                "call {h}",
+                "add esp, 4",
+                "test eax, eax",
+                "popad",
+                "jnz 2f",
+                "jmp dword ptr [{o}]",
+                "2:",
+                "ret 4",
+                h = sym h_show,
+                o = sym $orig,
+            );
+        }
+    };
+}
+show_thunk!(t_show_sw, O_SHOW_SW);
+show_thunk!(t_show_sh, O_SHOW_SH);
+
+/// WA's "show frame", in game with a frame of wkVista's: its frame into the back buffer, WA's
+/// success code as the result
+extern "C" fn h_show(r: &mut Regs) -> u32 {
+    if !SHOW.load(Ordering::Relaxed) || !crate::hooks::in_game() || FAILED.load(Ordering::Relaxed) {
+        return 0;
+    }
+    let shown = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        let dev = *((r.ecx as usize + 0x40) as *const usize);
+        if dev == 0 || *(dev as *const usize) != DEVICE_VT.load(Ordering::Relaxed) {
+            return Err(format!("backend {:#x}: no Direct3D 9 device at +0x40", r.ecx));
+        }
+        // a lost device: WA's own step (it resets the device)
+        let tcl: extern "system" fn(usize) -> Hr = std::mem::transmute(vt(dev, 3));
+        if tcl(dev) != 0 {
+            return Ok(false);
+        }
+        draw(dev)?;
+        let base = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) as usize;
+        let ok = *((0x8AC8B4usize).wrapping_add(base.wrapping_sub(0x40_0000)) as *const u32);
+        *(r.edx as *mut u32) = ok;
+        r.eax = r.edx;
+        Ok(true)
+    }))
+    .unwrap_or_else(|_| Err("panic".into()));
+    match shown {
+        Ok(true) => 1,
+        Ok(false) => 0,
+        Err(e) => {
+            // off for this run: WA's own picture
             FAILED.store(true, Ordering::Relaxed);
             log::line(&format!("true colour OFF: {e}"));
+            0
         }
-    }
-    unsafe {
-        let orig: extern "system" fn(usize, *const c_void, *const c_void, *mut c_void, *const c_void) -> Hr = std::mem::transmute(O_PRESENT);
-        orig(dev, src, dst, wnd, dirty)
     }
 }
 

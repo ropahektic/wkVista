@@ -313,24 +313,35 @@ extern "C" fn post() {
                 *c = (*p as u32) << 16 | (*p.add(1) as u32) << 8 | *p.add(2) as u32;
             }
             let (w, h, stride) = (f.target.w as usize, f.target.h as usize, f.target.stride as usize);
-            let land = s.land.as_ref().filter(|_| f.tc);
-            let side = &s.side;
+            let land = s.land.as_ref().filter(|_| f.tc).map(|l| &l.rgba[..]);
+            let side = &s.side[..];
+            let fb = f.target.data as usize;
+            // one band of rows a core (up to 8): each pixel on its own
+            let bands = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8);
             crate::present::fill(w as u32, h as u32, |px| {
-                for y in 0..h {
-                    let src = std::slice::from_raw_parts(f.target.data.add(y * stride), w);
-                    let row = &mut px[y * w..(y + 1) * w];
-                    match land {
-                        // untouched land: the original's colour
-                        Some(l) => {
-                            let sd = &side[y * w..(y + 1) * w];
-                            for ((o, &i), &k) in row.iter_mut().zip(src).zip(sd) {
-                                let c = if k != 0 { l.rgba[k as usize - 1] } else { 0 };
-                                *o = if c != 0 { c & 0xFF_FFFF } else { pal[i as usize] };
+                let rows = h.div_ceil(bands).max(1);
+                std::thread::scope(|sc| {
+                    for (b, out) in px.chunks_mut(rows * w).enumerate() {
+                        let pal = &pal;
+                        sc.spawn(move || {
+                            for (r, row) in out.chunks_mut(w).enumerate() {
+                                let y = b * rows + r;
+                                let src = std::slice::from_raw_parts((fb + y * stride) as *const u8, w);
+                                match land {
+                                    // untouched land: the original's colour
+                                    Some(rgba) => {
+                                        let sd = &side[y * w..(y + 1) * w];
+                                        for ((o, &i), &k) in row.iter_mut().zip(src).zip(sd) {
+                                            let c = if k != 0 { rgba[k as usize - 1] } else { 0 };
+                                            *o = if c != 0 { c & 0xFF_FFFF } else { pal[i as usize] };
+                                        }
+                                    }
+                                    None => row.iter_mut().zip(src).for_each(|(o, &i)| *o = pal[i as usize]),
+                                }
                             }
-                        }
-                        None => row.iter_mut().zip(src).for_each(|(o, &i)| *o = pal[i as usize]),
+                        });
                     }
-                }
+                });
             });
             crate::present::SHOW.store(true, Ordering::Relaxed);
         }
