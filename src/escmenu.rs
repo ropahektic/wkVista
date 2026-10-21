@@ -10,7 +10,8 @@
 //! and WA's sizing and frame take them in:
 //! - the header, "Resolution: 1920x1080 (16:9)"; clicked, it opens or closes the list;
 //! - opened, the display modes of this monitor's ratio (and the current mode) in two columns,
-//!   the current one in brackets; clicked, it is applied and the list closes.
+//!   the current one in brackets; clicked, it is applied and the list closes;
+//! - "Display: Fullscreen" / "Display: Windowed"; clicked, it switches (display.rs).
 //!
 //! The menu is drawn into a bitmap of a fixed size (the panel's +0: a BitmapImage, its width
 //! +0x14, height +0x18): rows past its bottom come out as garbage. So the list takes only the
@@ -26,8 +27,10 @@ use std::sync::Mutex;
 
 use crate::log;
 
-/// the header's id (WA's are 0 to 4); a mode's is MODE + its index in the list
+/// the header's id (WA's are 0 to 4); a mode's is MODE + its index in the list; the display
+/// switch's
 const HEADER: u32 = 0x57;
+const DISPLAY: u32 = 0x58;
 const MODE: u32 = 0x60;
 /// rows: the header and at most this many modes (a panel holds 16 items; WA's take up to 5)
 const MAX_MODES: usize = 10;
@@ -40,8 +43,8 @@ static OPEN: AtomicUsize = AtomicUsize::new(0);
 static OPENED: AtomicBool = AtomicBool::new(false);
 /// the modes listed, by row
 static LISTED: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
-/// the labels (WA keeps pointers to them): the header, then the modes
-static mut LABELS: [[u8; 48]; MAX_MODES + 1] = [[0; 48]; MAX_MODES + 1];
+/// the labels (WA keeps pointers to them): the header, the modes, the display switch
+static mut LABELS: [[u8; 48]; MAX_MODES + 2] = [[0; 48]; MAX_MODES + 2];
 static mut CALL: [u32; 8] = [0; 8];
 static CALL_RET: AtomicU32 = AtomicU32::new(0);
 static RUNTIME: AtomicUsize = AtomicUsize::new(0);
@@ -176,7 +179,7 @@ extern "C" fn h_after_first(r: &mut Regs) {
             let bitmap = r32(panel as usize) as usize;
             let (bw, bh) = if bitmap != 0 { (r32(bitmap + 0x14), r32(bitmap + 0x18)) } else { (0, 0) };
             let step = row + 1;
-            let room = bh.saturating_sub(y + step + 4 * step + 8) / step.max(1);
+            let room = bh.saturating_sub(y + step + 5 * step + 8) / step.max(1);
             let fit = (room as usize * 2).min(MAX_MODES);
             if modes.len() > fit {
                 log::line(&format!("Esc menu: room for {fit} of {} modes (menu bitmap {bw}x{bh}, row {step}): the smallest left out", modes.len()));
@@ -199,6 +202,12 @@ extern "C" fn h_after_first(r: &mut Regs) {
             }
             *LISTED.lock().unwrap() = modes;
         }
+        // the display switch, under the resolutions
+        set_label(MAX_MODES + 1, if crate::display::windowed() { "Display: Windowed" } else { "Display: Fullscreen" });
+        y = last.wrapping_add(row).wrapping_add(1);
+        if append(panel, x, DISPLAY, MAX_MODES + 1, y) {
+            last = y;
+        }
         r.ebp = last;
     }));
 }
@@ -211,6 +220,10 @@ extern "system" fn h_activate(panel: usize, out: *mut u32) -> i32 {
         return r;
     }
     let id = unsafe { *out };
+    if id == DISPLAY {
+        crate::display::ask_toggle();
+        return 0;
+    }
     if id == HEADER {
         OPENED.fetch_xor(true, Ordering::Relaxed);
         unsafe { refresh(RUNTIME.load(Ordering::Relaxed)) };

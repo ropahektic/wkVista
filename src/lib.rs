@@ -28,6 +28,8 @@ mod land;
 mod resize;
 #[cfg(all(windows, target_arch = "x86"))]
 mod escmenu;
+#[cfg(all(windows, target_arch = "x86"))]
+mod display;
 
 #[cfg(all(windows, target_arch = "x86"))]
 mod dll {

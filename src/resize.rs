@@ -16,9 +16,12 @@
 //!    resized: Direct3D scales the back buffer into it); fullscreen the window is moved to
 //!    (0, 0, w, h) and the mouse centre is (w / 2, h / 2).
 //!
-//! 4. The choice saved as WA's own setting (HKCU\Software\Team17SoftwareLTD\WormsArmageddon\
-//!    Options, DisplayXSize / DisplayYSize), so the next game starts with it, and the Esc menu
-//!    laid out again (its label current).
+//! 4. The choice kept where WA keeps it: the game's resolution (GameInfo +0xF3B4 / +0xF3B8,
+//!    0x88C7EC / 0x88C7F0: what WA sets the display up with again, e.g. switching back into
+//!    the game windowed), WA's options in memory (the options object 0x88E388 +0x30 / +0x34:
+//!    what WA saves) and the setting itself (HKCU\Software\Team17SoftwareLTD\WormsArmageddon\
+//!    Options, DisplayXSize / DisplayYSize), so the next game starts with it; the Esc menu laid
+//!    out again (its label current).
 //!
 //! It runs between frames (before GameRender), never while WA draws. Every step is logged.
 
@@ -133,6 +136,9 @@ pub unsafe fn apply(runtime: usize, display: usize, frame: u32) {
     }
     // 4. kept as WA's setting; the Esc menu's label
     if result == ok {
+        for (a, v) in [(0x88C7EC, w), (0x88C7F0, h), (0x88E388 + 0x30, w), (0x88E388 + 0x34, h)] {
+            w32(rb(a), v);
+        }
         save(w, h);
         crate::escmenu::refresh(runtime);
     }

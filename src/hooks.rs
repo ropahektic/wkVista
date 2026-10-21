@@ -269,6 +269,7 @@ extern "C" fn pre(runtime: u32) {
         // (resize.rs)
         if display != 0 {
             crate::resize::apply(runtime as usize, display, frame_no);
+            crate::display::apply(runtime as usize, display, frame_no);
         }
         // WA's framebuffer (the RenderContext's software buffer the backend shows)
         let (data, w, h) = (r32(rb(0x007A_0EEC)) as usize, i32_(rb(0x007A_0EF0)), i32_(rb(0x007A_0EF4)));
