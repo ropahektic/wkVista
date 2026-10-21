@@ -2,6 +2,8 @@
 name = "wkvista"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/ropahektic/wkVista"
 description = "wkVista: an in-game renderer for stock Worms Armageddon 3.8.1 (WormKit module): zoom, later a palette-free pipeline for mods"
 
 [lib]
