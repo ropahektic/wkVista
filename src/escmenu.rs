@@ -9,8 +9,13 @@
 //! appends its rows and moves EBP to its last one, so WA's own items follow below (Exit last)
 //! and WA's sizing and frame take them in:
 //! - the header, "Resolution: 1920x1080 (16:9)"; clicked, it opens or closes the list;
-//! - opened, one row per display mode of this monitor's ratio (and the current mode), the
-//!   current one in brackets; clicked, it is applied and the list closes.
+//! - opened, the display modes of this monitor's ratio (and the current mode) in two columns,
+//!   the current one in brackets; clicked, it is applied and the list closes.
+//!
+//! The menu is drawn into a bitmap of a fixed size (the panel's +0: a BitmapImage, its width
+//! +0x14, height +0x18): rows past its bottom come out as garbage. So the list takes only the
+//! rows left after room for WA's items still to come (at most 4 rows) and the frame; when that
+//! is too few, the smallest modes are left out (logged).
 //!
 //! MenuPanel::ActivateAtCursor 0x540810 (stdcall: the panel, where the id goes; ret 8) gives a
 //! clicked button's id with 1. On wkVista's ids it acts and gives 0 (nothing clicked: WA only
@@ -165,11 +170,28 @@ extern "C" fn h_after_first(r: &mut Regs) {
                 use windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics;
                 (GetSystemMetrics(0) as u32, GetSystemMetrics(1) as u32)
             };
-            let modes = offered(&crate::resize::modes(), monitor, cur);
+            let mut modes = offered(&crate::resize::modes(), monitor, cur);
+            // the rows the menu's bitmap has left: after WA's items still to come (4 rows at
+            // most) and the frame
+            let bitmap = r32(panel as usize) as usize;
+            let (bw, bh) = if bitmap != 0 { (r32(bitmap + 0x14), r32(bitmap + 0x18)) } else { (0, 0) };
+            let step = row + 1;
+            let room = bh.saturating_sub(y + step + 4 * step + 8) / step.max(1);
+            let fit = (room as usize * 2).min(MAX_MODES);
+            if modes.len() > fit {
+                log::line(&format!("Esc menu: room for {fit} of {} modes (menu bitmap {bw}x{bh}, row {step}): the smallest left out", modes.len()));
+                let cut = modes.len() - fit;
+                modes.drain(..cut);
+            }
+            // two columns, at the quarter points of the panel
+            let (left, right) = (x.wrapping_sub(bw / 4), x.wrapping_add(bw / 4));
             for (k, &(w, h)) in modes.iter().enumerate() {
                 set_label(k + 1, &if (w, h) == cur { format!("[{w}x{h}]") } else { format!("{w}x{h}") });
-                y = y.wrapping_add(row).wrapping_add(1);
-                if !append(panel, x, MODE + k as u32, k + 1, y) {
+                if k % 2 == 0 {
+                    y = y.wrapping_add(step);
+                }
+                let col = if modes.len() == 1 { x } else if k % 2 == 0 { left } else { right };
+                if !append(panel, col, MODE + k as u32, k + 1, y) {
                     log::line(&format!("Esc menu: the panel is full at {w}x{h}"));
                     break;
                 }
