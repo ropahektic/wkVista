@@ -18,8 +18,8 @@ untouched; in game:
 ## Install
 
 Download `wkVista.dll` from the [latest release](https://github.com/ropahektic/wkVista/releases/latest)
-and copy it into the WA folder (WA 3.8.1 with WormKit modules enabled in its options) (WormKit loads every `wk*.dll` there). Settings are in
-`wkVista.ini` beside it (written with the defaults on first start). Converted maps are kept in
+and copy it into the WA folder. WA 3.8.1 loads every `wk*.dll` there when WormKit modules are
+enabled in its options. Settings are in `wkVista.ini` beside it (written with the defaults on first start). Converted maps are kept in
 `wkVista\maps\`; your originals are never written.
 
 ## Logs (for test runs)
