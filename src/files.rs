@@ -69,8 +69,11 @@ fn proxy_for(path: &Path) -> Option<PathBuf> {
     }
     let mut head = [0u8; 26];
     use std::io::Read;
-    std::fs::File::open(path).ok()?.read_exact(&mut head).ok()?;
-    pngmap::full_colour(&head)?;
+    let n = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
+    let head = &head[..n];
+    if !pngmap::full_colour(head) {
+        return None;
+    }
     let dir = maps_dir()?;
     let name = path.file_name()?.to_string_lossy().to_string();
     let out = dir.join(&name);

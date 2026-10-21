@@ -47,3 +47,15 @@ fn proxies_are_legal_maps() {
     check(&img);
     assert!(proxy(&img).unwrap().at.1 >= 128);
 }
+
+/// env MAP=<file>: that image through decode + proxy + the checks above
+#[test]
+fn a_real_map() {
+    let Ok(path) = std::env::var("MAP") else { return };
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(wkVista::pngmap::full_colour(&bytes[..26]), "not a full-colour image");
+    let img = wkVista::pngmap::decode(&bytes).unwrap();
+    let p = proxy(&img).unwrap();
+    println!("{path}: {}x{} -> proxy {}x{} at {:?}, {} bytes", img.w, img.h, p.w, p.h, p.at, p.png.len());
+    check(&img);
+}

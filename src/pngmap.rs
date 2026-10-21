@@ -1,4 +1,5 @@
-//! A full-colour PNG map turned into a map WA accepts (its "proxy"), keeping the original.
+//! A full-colour map (a PNG, or a JPEG even under a .png name) turned into a map WA accepts (its
+//! "proxy"), keeping the original.
 //!
 //! WA's map loader (wa-play core/src/wa/mapimg.rs) takes only: an 8-bit palette PNG, at least
 //! 640 x 32, width and height multiples of 8, palette entry 0 black (air), at most 0x71 colours,
@@ -20,16 +21,38 @@ pub struct Rgba {
     pub px: Vec<u32>,
 }
 
-/// The PNG's colour type when it is a full-colour image WA can't load itself (8-bit RGB or
-/// RGBA); None for anything else (WA's own maps: palette PNGs)
-pub fn full_colour(head: &[u8]) -> Option<u8> {
-    if head.len() < 26 || head[..8] != [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A] || &head[12..16] != b"IHDR" {
-        return None;
+/// A full-colour image WA can't load itself, by its first bytes (whatever the file's name): a
+/// PNG with 8-bit RGB or RGBA, or a JPEG (no transparency: all land). WA's own maps (palette
+/// PNGs) and anything else: false.
+pub fn full_colour(head: &[u8]) -> bool {
+    if head.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return true;
     }
-    (head[24] == 8 && (head[25] == 6 || head[25] == 2)).then_some(head[25])
+    head.len() >= 26 && head[..8] == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A] && &head[12..16] == b"IHDR" && head[24] == 8 && (head[25] == 6 || head[25] == 2)
 }
 
+/// A full-colour image (PNG or JPEG) as 0xAARRGGBB pixels
 pub fn decode(bytes: &[u8]) -> Result<Rgba, String> {
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return decode_jpeg(bytes);
+    }
+    decode_png(bytes)
+}
+
+fn decode_jpeg(bytes: &[u8]) -> Result<Rgba, String> {
+    let mut d = jpeg_decoder::Decoder::new(bytes);
+    let px = d.decode().map_err(|e| e.to_string())?;
+    let info = d.info().ok_or("no JPEG info")?;
+    let (w, h) = (info.width as u32, info.height as u32);
+    let px = match info.pixel_format {
+        jpeg_decoder::PixelFormat::RGB24 => px.chunks(3).map(|p| 0xFF00_0000 | (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32).collect(),
+        jpeg_decoder::PixelFormat::L8 => px.iter().map(|&g| 0xFF00_0000 | (g as u32) * 0x01_0101).collect(),
+        f => return Err(format!("JPEG pixel format {f:?}")),
+    };
+    Ok(Rgba { w, h, px })
+}
+
+fn decode_png(bytes: &[u8]) -> Result<Rgba, String> {
     let mut d = png::Decoder::new(bytes);
     d.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut r = d.read_info().map_err(|e| e.to_string())?;
