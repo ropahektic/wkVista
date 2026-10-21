@@ -1,5 +1,5 @@
-//! WA's screen resolution changed in game (the Resolution item of WA's Esc menu, escmenu.rs:
-//! this PC's display modes in turn), by WA's own path, as WA itself switches between the
+//! WA's screen resolution changed in game (the Resolution dropdown of WA's Esc menu,
+//! escmenu.rs), by WA's own path, as WA itself switches between the
 //! frontend's 640 x 480 and the game's resolution at every game start
 //! (Frontend::LaunchGameSession 0x4EC5E0):
 //!
@@ -65,18 +65,11 @@ pub fn modes() -> Vec<(u32, u32)> {
     v
 }
 
-/// The mode `dir` (+1 / -1) steps from the current screen size, in turn
-pub fn ask_step(dir: i32) {
+/// A resolution asked for (applied before the next frame)
+pub fn ask(w: u32, h: u32) {
     let cur = unsafe { (r32(rb(0x7A0EF0)), r32(rb(0x7A0EF4))) };
-    let m = modes();
-    if m.is_empty() {
-        log::line("resolution: no display modes");
-        return;
-    }
-    let n = m.len() as i32;
-    let next = m.iter().position(|&x| x == cur).map_or(m[0], |i| m[(i as i32 + dir).rem_euclid(n) as usize]);
-    log::line(&format!("resolution: {}x{} -> {}x{} asked (modes: {})", cur.0, cur.1, next.0, next.1, m.iter().map(|(w, h)| format!("{w}x{h}")).collect::<Vec<_>>().join(" ")));
-    *PENDING.lock().unwrap() = Some(next);
+    log::line(&format!("resolution: {}x{} -> {w}x{h} asked", cur.0, cur.1));
+    *PENDING.lock().unwrap() = Some((w, h));
 }
 
 unsafe fn rects(wnd: HWND) -> String {

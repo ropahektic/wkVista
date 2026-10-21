@@ -1,33 +1,45 @@
-//! A "Resolution" item in WA's own Esc menu (resize.rs applies the choice).
+//! A "Resolution" dropdown in WA's own Esc menu (resize.rs applies the choice).
 //!
 //! GameRuntime::OpenEscMenu 0x535200 (stdcall, the runtime; ret 4) lays out its items one row
 //! under another with MenuPanel::AppendItem 0x5408F0 (ESI the panel, runtime +0x30; EAX the x,
 //! centred when the 4th argument is 1; stack: the item's id, its label (kept: item +0x34), the
-//! row's y, centred, a slider's value and maximum; ret 0x18). After the last item, the volume
-//! slider (its call returns to 0x535805: EBP its row's y, [esp+0x20] a row's height,
-//! [esp+0x2C] the buttons' x), WA sizes the panel from EBP; wkVista appends its item one row
-//! lower there and moves EBP to it, so WA's own sizing and frame take it in.
+//! row's y, centred, a slider's value and maximum; ret 0x18), then sizes the panel from the last
+//! row. Right after its first item (the call returns to 0x5356D3: EBP that row's y, [esp+0x20]
+//! a row's height, [esp+0x2C] the buttons' x; WA's next row is height + EBP + 1) wkVista
+//! appends its rows and moves EBP to its last one, so WA's own items follow below (Exit last)
+//! and WA's sizing and frame take them in:
+//! - the header, "Resolution: 1920x1080 (16:9)"; clicked, it opens or closes the list;
+//! - opened, one row per display mode of this monitor's ratio (and the current mode), the
+//!   current one in brackets; clicked, it is applied and the list closes.
 //!
 //! MenuPanel::ActivateAtCursor 0x540810 (stdcall: the panel, where the id goes; ret 8) gives a
-//! clicked button's id with 1. On wkVista's id it switches to the next resolution (Shift: the
-//! previous one) and gives 0 (nothing clicked: WA only plays its click sound); once the new
-//! resolution is applied, the menu is laid out again (OpenEscMenu) so its label is current.
+//! clicked button's id with 1. On wkVista's ids it acts and gives 0 (nothing clicked: WA only
+//! plays its click sound), and the menu is laid out again (OpenEscMenu) so it shows the change.
 
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use crate::log;
 
-/// wkVista's item id (WA's are 0 to 4)
-const ID: u32 = 0x57;
+/// the header's id (WA's are 0 to 4); a mode's is MODE + its index in the list
+const HEADER: u32 = 0x57;
+const MODE: u32 = 0x60;
+/// rows: the header and at most this many modes (a panel holds 16 items; WA's take up to 5)
+const MAX_MODES: usize = 10;
 
-static mut O_AFTER_VOLUME: usize = 0;
+static mut O_AFTER_FIRST: usize = 0;
 static mut O_ACTIVATE: usize = 0;
 static APPEND: AtomicUsize = AtomicUsize::new(0);
 static OPEN: AtomicUsize = AtomicUsize::new(0);
-/// the label (WA keeps a pointer to it)
-static mut LABEL: [u8; 64] = [0; 64];
+/// the list shown
+static OPENED: AtomicBool = AtomicBool::new(false);
+/// the modes listed, by row
+static LISTED: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
+/// the labels (WA keeps pointers to them): the header, then the modes
+static mut LABELS: [[u8; 48]; MAX_MODES + 1] = [[0; 48]; MAX_MODES + 1];
 static mut CALL: [u32; 8] = [0; 8];
 static CALL_RET: AtomicU32 = AtomicU32::new(0);
+static RUNTIME: AtomicUsize = AtomicUsize::new(0);
 
 fn rb(va: usize) -> usize {
     let base = unsafe { windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) } as usize;
@@ -38,7 +50,7 @@ unsafe fn r32(a: usize) -> u32 {
     std::ptr::read_unaligned(a as *const u32)
 }
 
-/// A screen ratio's usual name (16:9, 16:10, 4:3, 5:4, 3:2, 21:9), else w:h reduced
+/// A screen ratio's usual name (16:9, 16:10, 4:3, 5:4, 3:2, 21:9, within 1 %), else w:h reduced
 pub fn ratio(w: u32, h: u32) -> String {
     let r = w as f64 / h as f64;
     for (n, v) in [("16:9", 16.0 / 9.0), ("16:10", 1.6), ("4:3", 4.0 / 3.0), ("5:4", 1.25), ("3:2", 1.5), ("21:9", 64.0 / 27.0)] {
@@ -50,13 +62,26 @@ pub fn ratio(w: u32, h: u32) -> String {
     format!("{}:{}", w / g, h / g)
 }
 
-/// The label for the current resolution
-unsafe fn set_label() {
-    let (w, h) = (r32(rb(0x7A0EF0)), r32(rb(0x7A0EF4)));
-    let s = format!("Resolution: {w}x{h} ({})", ratio(w, h));
+/// The modes offered: this monitor's ratio (within 1 %), and the current one; at most
+/// MAX_MODES, the largest kept
+pub fn offered(all: &[(u32, u32)], monitor: (u32, u32), cur: (u32, u32)) -> Vec<(u32, u32)> {
+    let want = monitor.0 as f64 / monitor.1 as f64;
+    let mut v: Vec<(u32, u32)> = all.iter().copied().filter(|&(w, h)| ((w as f64 / h as f64) - want).abs() / want < 0.01 || (w, h) == cur).collect();
+    if !v.contains(&cur) && cur.0 > 0 {
+        v.push(cur);
+    }
+    v.sort_by_key(|&(w, h)| (w * h, w));
+    v.dedup();
+    if v.len() > MAX_MODES {
+        v.drain(..v.len() - MAX_MODES);
+    }
+    v
+}
+
+unsafe fn set_label(k: usize, s: &str) {
+    let label = &mut (*(&raw mut LABELS))[k];
     let b = s.as_bytes();
-    let n = b.len().min(63);
-    let label = &mut *(&raw mut LABEL);
+    let n = b.len().min(47);
     label[..n].copy_from_slice(&b[..n]);
     label[n] = 0;
 }
@@ -97,9 +122,9 @@ unsafe extern "C" fn call_append() {
     );
 }
 
-/// At 0x535805 (the volume slider appended): wkVista's item one row lower
+/// At 0x5356D3 (WA's first item appended): wkVista's rows
 #[unsafe(naked)]
-unsafe extern "C" fn t_after_volume() {
+unsafe extern "C" fn t_after_first() {
     core::arch::naked_asm!(
         "pushad",
         "push esp",
@@ -107,41 +132,81 @@ unsafe extern "C" fn t_after_volume() {
         "add esp, 4",
         "popad",
         "jmp dword ptr [{o}]",
-        h = sym h_after_volume,
-        o = sym O_AFTER_VOLUME,
+        h = sym h_after_first,
+        o = sym O_AFTER_FIRST,
     );
 }
 
-extern "C" fn h_after_volume(r: &mut Regs) {
+/// One row: its id, its label (LABELS[k]), its y; true when WA took it
+unsafe fn append(panel: u32, x: u32, id: u32, k: usize, y: u32) -> bool {
+    CALL = [panel, x, id, (&raw const LABELS[k]) as u32, y, 1, 0, 0];
+    let call: unsafe extern "C" fn() = call_append;
+    call();
+    CALL_RET.load(Ordering::Relaxed) != 0
+}
+
+extern "C" fn h_after_first(r: &mut Regs) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
         let runtime = r.ebx as usize;
+        RUNTIME.store(runtime, Ordering::Relaxed);
         let panel = r32(runtime + 0x30);
         let esp = r.esp as usize;
         let (row, x) = (r32(esp + 0x20), r32(esp + 0x2C));
-        let y = row.wrapping_add(r.ebp).wrapping_add(1);
-        set_label();
-        CALL = [panel, x, ID, (&raw const LABEL) as u32, y, 1, 0, 0];
-        let call: unsafe extern "C" fn() = call_append;
-        call();
-        if CALL_RET.load(Ordering::Relaxed) != 0 {
-            r.ebp = y;
+        let cur = (r32(rb(0x7A0EF0)), r32(rb(0x7A0EF4)));
+        let opened = OPENED.load(Ordering::Relaxed);
+        set_label(0, &format!("Resolution: {}x{} ({}){}", cur.0, cur.1, ratio(cur.0, cur.1), if opened { " -" } else { " +" }));
+        let mut y = row.wrapping_add(r.ebp).wrapping_add(1);
+        if !append(panel, x, HEADER, 0, y) {
+            return;
         }
+        let mut last = y;
+        if opened {
+            let monitor = {
+                use windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics;
+                (GetSystemMetrics(0) as u32, GetSystemMetrics(1) as u32)
+            };
+            let modes = offered(&crate::resize::modes(), monitor, cur);
+            for (k, &(w, h)) in modes.iter().enumerate() {
+                set_label(k + 1, &if (w, h) == cur { format!("[{w}x{h}]") } else { format!("{w}x{h}") });
+                y = y.wrapping_add(row).wrapping_add(1);
+                if !append(panel, x, MODE + k as u32, k + 1, y) {
+                    log::line(&format!("Esc menu: the panel is full at {w}x{h}"));
+                    break;
+                }
+                last = y;
+            }
+            *LISTED.lock().unwrap() = modes;
+        }
+        r.ebp = last;
     }));
 }
 
-/// ActivateAtCursor: wkVista's item clicked -> the next resolution (Shift: the previous one)
+/// ActivateAtCursor: wkVista's rows clicked
 extern "system" fn h_activate(panel: usize, out: *mut u32) -> i32 {
     let orig: extern "system" fn(usize, *mut u32) -> i32 = unsafe { std::mem::transmute(O_ACTIVATE) };
     let r = orig(panel, out);
-    if r == 1 && !out.is_null() && unsafe { *out } == ID {
-        let back = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x10) } < 0;
-        crate::resize::ask_step(if back { -1 } else { 1 });
+    if r != 1 || out.is_null() {
+        return r;
+    }
+    let id = unsafe { *out };
+    if id == HEADER {
+        OPENED.fetch_xor(true, Ordering::Relaxed);
+        unsafe { refresh(RUNTIME.load(Ordering::Relaxed)) };
+        return 0;
+    }
+    if (MODE..MODE + MAX_MODES as u32).contains(&id) {
+        if let Some(&(w, h)) = LISTED.lock().unwrap().get((id - MODE) as usize) {
+            crate::resize::ask(w, h);
+        }
+        OPENED.store(false, Ordering::Relaxed);
+        unsafe { refresh(RUNTIME.load(Ordering::Relaxed)) };
         return 0;
     }
     r
 }
 
-/// The Esc menu laid out again (its label current), when it is open
+/// The Esc menu laid out again (it shows the list's state and the current resolution), when it
+/// is open
 pub unsafe fn refresh(runtime: usize) {
     if runtime == 0 || r32(runtime + 0x434) != 1 {
         return;
@@ -154,14 +219,14 @@ pub fn install() -> Result<(), String> {
     unsafe {
         APPEND.store(rb(0x5408F0), Ordering::Relaxed);
         OPEN.store(rb(0x535200), Ordering::Relaxed);
-        // the volume slider's AppendItem call, as in WA 3.8.1
-        let at = rb(0x5357F9);
-        let code = std::slice::from_raw_parts(at as *const u8, 12);
-        if code != [0x6A, 0x04, 0xB8, 0x06, 0x00, 0x00, 0x00, 0xE8, 0xEB, 0xB0, 0x00, 0x00] {
+        // the first item's AppendItem call, as in WA 3.8.1
+        let at = rb(0x5356C8);
+        let code = std::slice::from_raw_parts(at as *const u8, 11);
+        if code != [0x6A, 0x03, 0x89, 0x44, 0x24, 0x44, 0xE8, 0x1D, 0xB2, 0x00, 0x00] {
             return Err(format!("WA's Esc menu is not as in WA 3.8.1 ({code:02X?})"));
         }
         let hooks: [(usize, *mut std::ffi::c_void, *mut usize); 2] = [
-            (rb(0x535805), t_after_volume as *mut std::ffi::c_void, &raw mut O_AFTER_VOLUME),
+            (rb(0x5356D3), t_after_first as *mut std::ffi::c_void, &raw mut O_AFTER_FIRST),
             (rb(0x540810), h_activate as *mut std::ffi::c_void, &raw mut O_ACTIVATE),
         ];
         for &(target, det, orig) in &hooks {
@@ -172,18 +237,27 @@ pub fn install() -> Result<(), String> {
             minhook::MinHook::enable_hook(target as *mut std::ffi::c_void).map_err(|e| format!("enable {target:#x}: {e:?}"))?;
         }
     }
-    log::line("Esc menu: a Resolution item (click: next, Shift+click: previous)");
+    log::line("Esc menu: a Resolution dropdown after the first item");
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ratio;
+    use super::{offered, ratio};
 
     #[test]
     fn ratio_names() {
         for (w, h, r) in [(1920, 1080, "16:9"), (1366, 768, "16:9"), (1920, 1200, "16:10"), (1680, 1050, "16:10"), (1024, 768, "4:3"), (1152, 864, "4:3"), (1280, 1024, "5:4"), (720, 480, "3:2"), (2560, 1080, "21:9"), (1176, 664, "16:9"), (800, 700, "8:7")] {
             assert_eq!(ratio(w, h), r, "{w}x{h}");
         }
+    }
+
+    #[test]
+    fn modes_of_the_monitors_ratio() {
+        // the list this PC reported, a 3840 x 2160 desktop, playing at 1152 x 864 (kept, listed
+        // in size order with the monitor's 16:9 modes)
+        let all = [(640, 480), (720, 480), (720, 576), (800, 600), (1176, 664), (1024, 768), (1280, 720), (1280, 768), (1152, 864), (1280, 800), (1360, 768), (1366, 768), (1280, 960), (1280, 1024), (1600, 900), (1440, 1080), (1600, 1024), (1680, 1050), (1600, 1200), (1920, 1080), (1920, 1200), (1920, 1440), (2048, 1536)];
+        let v = offered(&all, (3840, 2160), (1152, 864));
+        assert_eq!(v, [(1176, 664), (1280, 720), (1152, 864), (1360, 768), (1366, 768), (1600, 900), (1920, 1080)]);
     }
 }
