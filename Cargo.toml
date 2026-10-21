@@ -1,0 +1,22 @@
+[package]
+name = "wkvista"
+version = "0.1.0"
+edition = "2021"
+description = "wkVista: an in-game renderer for stock Worms Armageddon 3.8.1 (WormKit module): zoom, later a palette-free pipeline for mods"
+
+[lib]
+name = "wkVista"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+minhook = "0.8"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemServices",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = 3
+debug = false

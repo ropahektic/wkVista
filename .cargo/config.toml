@@ -1,0 +1,3 @@
+# WA.exe is 32-bit: the module is too
+[build]
+target = "i686-pc-windows-msvc"
