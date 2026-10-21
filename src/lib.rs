@@ -26,6 +26,8 @@ mod files;
 mod land;
 #[cfg(all(windows, target_arch = "x86"))]
 mod resize;
+#[cfg(all(windows, target_arch = "x86"))]
+mod escmenu;
 
 #[cfg(all(windows, target_arch = "x86"))]
 mod dll {
@@ -72,6 +74,9 @@ mod dll {
                 Ok(()) => crate::log::line("true colour: WA's Direct3D 9 backends hooked (used when WA's renderer is a Direct3D 9 option)"),
                 Err(e) => crate::log::line(&format!("true colour unavailable: {e}")),
             }
+        }
+        if let Err(e) = crate::escmenu::install() {
+            crate::log::line(&format!("Esc menu Resolution item unavailable: {e}"));
         }
         match crate::hooks::install(cfg, dir) {
             Ok(()) => crate::log::line("hooks on: GameRender, RenderDrawingQueue, the 7 drawing functions, the camera clamp, the window procedure"),

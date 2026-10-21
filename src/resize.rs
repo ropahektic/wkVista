@@ -1,6 +1,7 @@
-//! WA's screen resolution changed in game (a test key for now: Ctrl+F12 cycles through this
-//! PC's display modes), by WA's own path, as WA itself switches between the frontend's 640 x 480
-//! and the game's resolution at every game start (Frontend::LaunchGameSession 0x4EC5E0):
+//! WA's screen resolution changed in game (the Resolution item of WA's Esc menu, escmenu.rs:
+//! this PC's display modes in turn), by WA's own path, as WA itself switches between the
+//! frontend's 640 x 480 and the game's resolution at every game start
+//! (Frontend::LaunchGameSession 0x4EC5E0):
 //!
 //! 1. RenderContext resize (vtable 0x662EC8 slot 9, 0x5A2530; ECX the RenderContext 0x79D6D4,
 //!    EDX the result, width, height; ret 8): a new framebuffer (0x7A0EEC, its size 0x7A0EF0 /
@@ -14,6 +15,10 @@
 //!    +0x80 / +0x84) and the cursor is clipped to the window's client area (the window is not
 //!    resized: Direct3D scales the back buffer into it); fullscreen the window is moved to
 //!    (0, 0, w, h) and the mouse centre is (w / 2, h / 2).
+//!
+//! 4. The choice saved as WA's own setting (HKCU\Software\Team17SoftwareLTD\WormsArmageddon\
+//!    Options, DisplayXSize / DisplayYSize), so the next game starts with it, and the Esc menu
+//!    laid out again (its label current).
 //!
 //! It runs between frames (before GameRender), never while WA draws. Every step is logged.
 
@@ -60,15 +65,16 @@ pub fn modes() -> Vec<(u32, u32)> {
     v
 }
 
-/// The next mode after the current screen size
-pub fn ask_next() {
+/// The mode `dir` (+1 / -1) steps from the current screen size, in turn
+pub fn ask_step(dir: i32) {
     let cur = unsafe { (r32(rb(0x7A0EF0)), r32(rb(0x7A0EF4))) };
     let m = modes();
     if m.is_empty() {
         log::line("resolution: no display modes");
         return;
     }
-    let next = m.iter().position(|&x| x == cur).map_or(m[0], |i| m[(i + 1) % m.len()]);
+    let n = m.len() as i32;
+    let next = m.iter().position(|&x| x == cur).map_or(m[0], |i| m[(i as i32 + dir).rem_euclid(n) as usize]);
     log::line(&format!("resolution: {}x{} -> {}x{} asked (modes: {})", cur.0, cur.1, next.0, next.1, m.iter().map(|(w, h)| format!("{w}x{h}")).collect::<Vec<_>>().join(" ")));
     *PENDING.lock().unwrap() = Some(next);
 }
@@ -80,8 +86,8 @@ unsafe fn rects(wnd: HWND) -> String {
     format!("window ({},{})-({},{}) client {}x{}", wr.left, wr.top, wr.right, wr.bottom, cr.right - cr.left, cr.bottom - cr.top)
 }
 
-/// Before a frame: a pending resolution applied (`display`: DisplayGfx)
-pub unsafe fn apply(display: usize, frame: u32) {
+/// Before a frame: a pending resolution applied (`runtime`: GameRuntime, `display`: DisplayGfx)
+pub unsafe fn apply(runtime: usize, display: usize, frame: u32) {
     let Some((w, h)) = PENDING.lock().unwrap().take() else { return };
     let wnd = r32(rb(0x6B390C)) as HWND;
     let windowed = r32(rb(0x7A084C)) != 0;
@@ -132,6 +138,11 @@ pub unsafe fn apply(display: usize, frame: u32) {
         MapWindowPoints(wnd, std::ptr::null_mut(), &mut cr as *mut RECT as *mut POINT, 2);
         ClipCursor(&cr);
     }
+    // 4. kept as WA's setting; the Esc menu's label
+    if result == ok {
+        save(w, h);
+        crate::escmenu::refresh(runtime);
+    }
     log::line(&format!(
         "[{frame}] resolution {w}x{h}: after: result {}, framebuffer {}x{}, backend size {}x{}, mouse centre ({cx},{cy}), {}",
         if result == ok { "ok".to_string() } else { format!("{result:#x}") },
@@ -139,4 +150,16 @@ pub unsafe fn apply(display: usize, frame: u32) {
         if backend != 0 { r32(backend + 0x1C) } else { 0 }, if backend != 0 { r32(backend + 0x20) } else { 0 },
         rects(wnd)
     ));
+}
+
+/// WA's own resolution setting (read at its start)
+fn save(w: u32, h: u32) {
+    use windows_sys::Win32::System::Registry::{RegSetKeyValueA, HKEY_CURRENT_USER, REG_DWORD};
+    let key = b"Software\\Team17SoftwareLTD\\WormsArmageddon\\Options\0";
+    for (name, v) in [(&b"DisplayXSize\0"[..], w), (&b"DisplayYSize\0"[..], h)] {
+        let r = unsafe { RegSetKeyValueA(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), REG_DWORD, &v as *const u32 as *const _, 4) };
+        if r != 0 {
+            log::line(&format!("resolution: WA's setting not saved ({r})"));
+        }
+    }
 }
