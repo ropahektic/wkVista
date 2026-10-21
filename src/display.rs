@@ -12,6 +12,8 @@
 //!   game): the game's resolution (0x88C7EC / 0x88C7F0) centred on the desktop, scaled down to
 //!   fit, the caption put back when 0x6B32AA says it was removed (or removed when nothing fits),
 //!   then the display set up again at that resolution (the Direct3D reset, now windowed).
+//!   Leaving fullscreen, that reset puts back the window style and place Direct3D saved when it
+//!   went fullscreen, so WA's setup runs once more without the display (0) to place the window.
 //! - Fullscreen: what WA does at a fullscreen game start: no caption (CWnd::ModifyStyle
 //!   0x5C6350, thiscall: the window object 0x6B3908, remove, add, flags; ret 0xC), the display
 //!   set up again (RenderContext resize at the same size: the Direct3D reset, now fullscreen),
@@ -95,6 +97,11 @@ pub unsafe fn apply(runtime: usize, display: usize, frame: u32) {
         *(rb(0x6B32AA) as *mut u8) = 1;
         let setup: extern "system" fn(u32) = std::mem::transmute(rb(0x4EC0D0));
         setup(1);
+        // leaving fullscreen, the Direct3D reset puts back the window style and place it saved
+        // when it went fullscreen (no caption, the old rectangle), undoing the window part just
+        // done; WA's setup again without the display (0) puts its windowed window back
+        *(rb(0x6B32AA) as *mut u8) = 1;
+        setup(0);
         // the mouse as InitHardware: the screen's centre, the cursor kept in the client area
         let (cx, cy) = {
             use windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics;
