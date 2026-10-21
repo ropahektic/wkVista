@@ -23,7 +23,8 @@
 //!    Options, DisplayXSize / DisplayYSize), so the next game starts with it; the Esc menu laid
 //!    out again (its label current).
 //!
-//! It runs between frames (before GameRender), never while WA draws. Every step is logged.
+//! It runs when WA's message pump delivers wkVista's message (hooks.rs MSG_SWITCH): between
+//! frames, where WA handles activation and display messages itself. Every step is logged.
 
 use std::sync::Mutex;
 
@@ -73,6 +74,7 @@ pub fn ask(w: u32, h: u32) {
     let cur = unsafe { (r32(rb(0x7A0EF0)), r32(rb(0x7A0EF4))) };
     log::line(&format!("resolution: {}x{} -> {w}x{h} asked", cur.0, cur.1));
     *PENDING.lock().unwrap() = Some((w, h));
+    crate::hooks::post_switch();
 }
 
 unsafe fn rects(wnd: HWND) -> String {

@@ -17,7 +17,9 @@
 //!   set up again (RenderContext resize at the same size: the Direct3D reset, now fullscreen),
 //!   the window at (0, 0, w, h) and topmost, the mouse centred (InitHardware).
 //!
-//! It runs between frames (before GameRender), never while WA draws. Every step is logged.
+//! It runs when WA's message pump delivers wkVista's message (hooks.rs MSG_SWITCH): between
+//! frames, where WA handles activation and display messages itself (a fullscreen mode change
+//! makes Windows send them during the Direct3D reset). Every step is logged.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -49,6 +51,7 @@ pub fn windowed() -> bool {
 pub fn ask_toggle() {
     log::line(&format!("display: {} asked", if windowed() { "fullscreen" } else { "windowed" }));
     PENDING.store(true, Ordering::Relaxed);
+    crate::hooks::post_switch();
 }
 
 unsafe fn state(wnd: HWND) -> String {

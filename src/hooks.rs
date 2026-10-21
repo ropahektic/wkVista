@@ -87,6 +87,40 @@ static DISABLED: AtomicBool = AtomicBool::new(false);
 /// the time of the last GameRender (ms since start): in game when recent
 static LAST_RENDER: AtomicU32 = AtomicU32::new(0);
 static MARKS: AtomicU32 = AtomicU32::new(0);
+/// the runtime of the last GameRender (the resolution and display switches act on it)
+static RUNTIME: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// wkVista's message to WA's window: a resolution or display switch asked for (WM_APP + 0x5756)
+pub(crate) const MSG_SWITCH: u32 = 0x8000 + 0x5756;
+
+/// Asks WA's message pump for a switch: done between frames, where WA handles activation and
+/// display messages itself (a fullscreen mode change makes Windows send them during the
+/// Direct3D reset; inside a frame, WA's activation handler could release the display under it)
+pub(crate) fn post_switch() {
+    unsafe {
+        let wnd = r32(rb(0x6B390C)) as isize as windows_sys::Win32::Foundation::HWND;
+        windows_sys::Win32::UI::WindowsAndMessaging::PostMessageA(wnd, MSG_SWITCH, 0, 0);
+    }
+}
+
+/// wkVista's message delivered: the switches asked for
+fn do_switch() {
+    unsafe {
+        let rt = RUNTIME.load(Ordering::Relaxed);
+        if rt == 0 {
+            return;
+        }
+        let world = r32(rt + 0x488) as usize;
+        if world == 0 {
+            return;
+        }
+        let display = r32(world + 4) as usize;
+        let frame = r32(world + 0x5CC);
+        if display != 0 {
+            crate::resize::apply(rt, display, frame);
+            crate::display::apply(rt, display, frame);
+        }
+    }
+}
 static PENDING_MARK: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -267,10 +301,7 @@ extern "C" fn pre(runtime: u32) {
         let display = r32(world + 4) as usize;
         // a resolution asked for: applied now, between frames, before the framebuffer is read
         // (resize.rs)
-        if display != 0 {
-            crate::resize::apply(runtime as usize, display, frame_no);
-            crate::display::apply(runtime as usize, display, frame_no);
-        }
+        RUNTIME.store(runtime as usize, Ordering::Relaxed);
         // WA's framebuffer (the RenderContext's software buffer the backend shows)
         let (data, w, h) = (r32(rb(0x007A_0EEC)) as usize, i32_(rb(0x007A_0EF0)), i32_(rb(0x007A_0EF4)));
         // full colour: the land matched once its tile table exists
@@ -618,6 +649,10 @@ extern "system" fn wndproc(hwnd: isize, msg: u32, wp: usize, lp: isize) -> isize
     let handled = guard(false, || {
         let cfg = st().cfg.clone();
         match msg {
+            MSG_SWITCH => {
+                do_switch();
+                true
+            }
             // WM_MOUSEWHEEL
             0x020A if cfg.wheel && in_game() => {
                 let delta = (wp >> 16) as u16 as i16;

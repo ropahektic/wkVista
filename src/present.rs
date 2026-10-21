@@ -188,6 +188,7 @@ unsafe fn draw(dev: usize) -> Result<(), String> {
 }
 
 static FAILED: AtomicBool = AtomicBool::new(false);
+static NO_DEVICE_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// The registers a "show frame" thunk saved (pushad), then the return address and the argument
 #[repr(C)]
@@ -239,8 +240,18 @@ extern "C" fn h_show(r: &mut Regs) -> u32 {
         // called the same way)
         let dev = *((r.ecx as usize + 0x40) as *const usize);
         if dev == 0 || *(dev as *const usize) == 0 {
-            return Ok::<bool, String>(false);
+            // WA released its display (focus lost in fullscreen, a mode change): its own step
+            // would use the missing device, so this frame is shown by nobody, as success, until
+            // WA has a device again
+            if !NO_DEVICE_LOGGED.swap(true, Ordering::Relaxed) {
+                log::line(&format!("true colour: backend {:#x} has no device: frames skipped until WA sets it up again", r.ecx));
+            }
+            let base = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) as usize;
+            *(r.edx as *mut u32) = *((0x8AC8B4usize).wrapping_add(base.wrapping_sub(0x40_0000)) as *const u32);
+            r.eax = r.edx;
+            return Ok::<bool, String>(true);
         }
+        NO_DEVICE_LOGGED.store(false, Ordering::Relaxed);
         // a lost device: our surface freed (a reset needs every default-pool resource gone),
         // then WA's own step (it resets the device)
         let tcl: extern "system" fn(usize) -> Hr = std::mem::transmute(vt(dev, 3));
