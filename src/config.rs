@@ -19,14 +19,12 @@ pub struct Config {
     pub truecolor: bool,
     /// the WA theme full-colour maps get (pngmap::THEMES: the soil behind craters, the backdrop)
     pub map_theme: u32,
-    /// smooth motion between game frames (smooth.rs)
-    pub smooth: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         // numpad + / - / *, Scroll Lock
-        Config { wheel: true, key_zoom_in: 0x6B, key_zoom_out: 0x6D, key_zoom_reset: 0x6A, key_mark: 0x91, zoom_max: 64, csv: true, truecolor: true, map_theme: 11, smooth: true }
+        Config { wheel: true, key_zoom_in: 0x6B, key_zoom_out: 0x6D, key_zoom_reset: 0x6A, key_mark: 0x91, zoom_max: 64, csv: true, truecolor: true, map_theme: 11 }
     }
 }
 
@@ -48,9 +46,6 @@ csv = 1
 truecolor = 1
 # the WA theme full-colour maps get: the soil behind craters and the backdrop (a theme's name)
 map_theme = Forest
-# smooth motion between game frames at high refresh rates (1 = on; the picture runs up to one
-# game frame, 20 ms, behind)
-smooth = 1
 ";
 
 fn num(v: &str) -> Option<i64> {
@@ -100,7 +95,6 @@ pub fn load(dir: &Path) -> (Config, Vec<String>) {
             ("zoom_max", Some(n)) => c.zoom_max = (n as i32).clamp(16, 128),
             ("csv", Some(n)) => c.csv = n != 0,
             ("truecolor", Some(n)) => c.truecolor = n != 0,
-            ("smooth", Some(n)) => c.smooth = n != 0,
             _ => bad.push(line.to_string()),
         }
     }

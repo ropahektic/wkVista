@@ -24,8 +24,6 @@ mod present;
 mod files;
 #[cfg(all(windows, target_arch = "x86"))]
 mod land;
-#[cfg(all(windows, target_arch = "x86"))]
-mod smooth;
 
 #[cfg(all(windows, target_arch = "x86"))]
 mod dll {
