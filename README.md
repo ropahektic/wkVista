@@ -9,6 +9,8 @@ untouched; in game:
 - **Native true colour** (WA's renderer on one of its Direct3D 9 options): wkVista draws WA's
   frame itself, operation by operation in WA's order, and WA's Direct3D 9 backend shows that
   frame in place of its own palette pass. Nothing is painted over WA's picture.
+- **Resolution in game**: a Resolution dropdown in WA's Esc menu lists your monitor's modes;
+  the switch happens live, through WA's own display code.
 - At **1×** with an ordinary map, WA draws everything itself, exactly as without the module.
 
 ## Install
