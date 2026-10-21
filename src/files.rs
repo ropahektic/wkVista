@@ -24,6 +24,8 @@ static CACHE: Mutex<Option<HashMap<PathBuf, (std::time::SystemTime, Arc<Vec<u8>>
 /// the originals WA opened this session, the latest last (tried first in game)
 static RECENT: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 static TEMP_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// the theme converted maps get (config map_theme)
+static THEME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(6);
 
 /// WA's `User\SavedLevels`
 pub fn saved_levels() -> Option<PathBuf> {
@@ -83,10 +85,19 @@ fn proxy_for(path: &Path) -> Option<Arc<Vec<u8>>> {
     }
     let name = path.file_name()?.to_string_lossy().to_string();
     let t = std::time::Instant::now();
-    let made = std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| pngmap::decode(&b)).and_then(|img| pngmap::proxy(&img).map(|p| (img, p)));
+    let made = std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| pngmap::decode(&b)).and_then(|img| pngmap::proxy(&img, THEME.load(std::sync::atomic::Ordering::Relaxed)).map(|p| (img, p)));
     match made {
         Ok((img, p)) => {
-            log::line(&format!("map {name}: {}x{} full colour -> WA map {}x{} (original at {:?}), {:.0} ms", img.w, img.h, p.w, p.h, p.at, t.elapsed().as_secs_f64() * 1e3));
+            log::line(&format!(
+                "map {name}: {}x{} full colour -> WA map {}x{} (original at {:?}, theme {}), {:.0} ms",
+                img.w,
+                img.h,
+                p.w,
+                p.h,
+                p.at,
+                pngmap::THEMES[THEME.load(std::sync::atomic::Ordering::Relaxed) as usize % pngmap::THEMES.len()],
+                t.elapsed().as_secs_f64() * 1e3
+            ));
             let b = Arc::new(p.png);
             CACHE.lock().unwrap().get_or_insert_with(HashMap::new).insert(path.to_path_buf(), (modified, b.clone()));
             Some(b)
@@ -150,9 +161,11 @@ extern "system" fn cfa(name: *const u8, access: u32, share: u32, sa: *mut c_void
     orig(name, access, share, sa, disp, flags, tmpl)
 }
 
-/// Patches WA.exe's imports of kernel32 CreateFileA / CreateFileW
-pub fn install(dir: &Path) -> Result<(), String> {
+/// Patches WA.exe's imports of kernel32 CreateFileA / CreateFileW; converted maps get WA theme
+/// `theme`
+pub fn install(dir: &Path, theme: u32) -> Result<(), String> {
     *DIR.lock().unwrap() = Some(dir.to_path_buf());
+    THEME.store(theme, std::sync::atomic::Ordering::Relaxed);
     unsafe {
         let base = GetModuleHandleW(std::ptr::null()) as usize;
         let rd = |a: usize| std::ptr::read_unaligned(a as *const u32) as usize;

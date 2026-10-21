@@ -6,7 +6,7 @@
 use wkVista::pngmap::{is_land, proxy, Rgba};
 
 fn check(img: &Rgba) {
-    let p = proxy(img).unwrap();
+    let p = proxy(img, 6).unwrap();
     let mut d = png::Decoder::new(&p.png[..]);
     d.set_transformations(png::Transformations::IDENTITY);
     let mut r = d.read_info().unwrap();
@@ -19,6 +19,9 @@ fn check(img: &Rgba) {
     assert!(pal.len() / 3 <= 0x71 && pal[..3] == [0, 0, 0], "{} colours, entry 0 {:?}", pal.len() / 3, &pal[..3]);
     let walv = p.png.windows(8).position(|c| &c[4..] == b"waLV").expect("waLV chunk");
     assert_eq!(u32::from_be_bytes(p.png[walv..walv + 4].try_into().unwrap()), 40);
+    // the theme word (+0x20): Forest, as WA's editor writes it
+    let theme = u32::from_le_bytes(p.png[walv + 8 + 0x20..walv + 8 + 0x24].try_into().unwrap());
+    assert_eq!(theme, 0x1_0006);
     let mut idx = vec![0u8; r.output_buffer_size()];
     r.next_frame(&mut idx).unwrap();
     for y in 0..h {
@@ -45,7 +48,7 @@ fn proxies_are_legal_maps() {
     let px: Vec<u32> = (0..w * h).map(|i| 0xFF00_0000 | (i * 2654435761u32 >> 8)).collect();
     let img = Rgba { w, h, px };
     check(&img);
-    assert!(proxy(&img).unwrap().at.1 >= 128);
+    assert!(proxy(&img, 6).unwrap().at.1 >= 128);
 }
 
 /// env MAP=<file>: that image through decode + proxy + the checks above
@@ -55,7 +58,7 @@ fn a_real_map() {
     let bytes = std::fs::read(&path).unwrap();
     assert!(wkVista::pngmap::full_colour(&bytes[..26]), "not a full-colour image");
     let img = wkVista::pngmap::decode(&bytes).unwrap();
-    let p = proxy(&img).unwrap();
+    let p = proxy(&img, 6).unwrap();
     println!("{path}: {}x{} -> proxy {}x{} at {:?}, {} bytes", img.w, img.h, p.w, p.h, p.at, p.png.len());
     check(&img);
 }

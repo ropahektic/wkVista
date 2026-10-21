@@ -63,7 +63,7 @@ mod dll {
         }
         crate::log::line(&format!("settings: {cfg:?}"));
         if cfg.truecolor {
-            if let Err(e) = crate::files::install(&dir) {
+            if let Err(e) = crate::files::install(&dir, cfg.map_theme) {
                 crate::log::line(&format!("full-colour maps unavailable: {e}"));
             }
             match crate::present::install() {

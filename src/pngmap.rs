@@ -10,7 +10,8 @@
 //! - size: padded with air to multiples of 8 and at least 640 x 32, on the right and on top (the
 //!   land keeps the bottom); a map with no air at all gets 128 rows of air on top, so WA can
 //!   place worms on it;
-//! - settings: an open map (no borders), its seed from the image.
+//! - settings: an open map (no borders), its seed from the image, a theme (the soil behind
+//!   craters and the backdrop come from it; theme 0, Art, has white paper soil).
 //!
 //! The original's colours are what wkVista shows in game on the land WA has not changed.
 
@@ -141,11 +142,20 @@ fn median_cut(cols: &[u32], n: usize) -> (Vec<u32>, std::collections::HashMap<u3
     (pal, map)
 }
 
-/// The settings chunk of an open map; the seed from the image
-fn settings(seed: u64) -> [u8; 40] {
+/// WA's themes in their numbering (the settings' theme word, +0x20)
+pub const THEMES: [&str; 24] = [
+    "Art", "Cheese", "Construction", "Desert", "Dungeon", "Easter", "Forest", "Fruit", "Gulf", "Hell", "Hospital", "Jungle",
+    "Manhattan", "Medieval", "Music", "Pirate", "Snow", "Space", "Sports", "Tentacle", "Time", "Tools", "Tribal", "Urban",
+];
+
+/// The settings chunk of an open map (wa-play maps.rs reads them as WA's loader does: +0 and
+/// +4 the seeds, +0x10 no borders, +0x20 the theme word, split by 0x491530 into its number,
+/// low 16 bits, and 1 in the high ones as WA's editor writes it); the seed from the image
+fn settings(seed: u64, theme: u32) -> [u8; 40] {
     let mut s = [0u8; 40];
     s[..8].copy_from_slice(&seed.to_le_bytes());
     s[0x10] = 1;
+    s[0x20..0x24].copy_from_slice(&(0x1_0000 | theme).to_le_bytes());
     s
 }
 
@@ -174,7 +184,8 @@ pub fn size(bytes: &[u8]) -> Option<(u32, u32)> {
     (bytes.len() >= 24).then(|| (u32::from_be_bytes(bytes[16..20].try_into().unwrap()), u32::from_be_bytes(bytes[20..24].try_into().unwrap())))
 }
 
-pub fn proxy(img: &Rgba) -> Result<Proxy, String> {
+/// The proxy of `img` with WA theme number `theme` (THEMES)
+pub fn proxy(img: &Rgba, theme: u32) -> Result<Proxy, String> {
     let any_air = img.px.iter().any(|&p| !is_land(p));
     let (w, h, at) = layout(img.w, img.h, any_air);
     if w >= 0x6F00 || h >= 0x7760 {
@@ -207,7 +218,7 @@ pub fn proxy(img: &Rgba) -> Result<Proxy, String> {
         e.set_depth(png::BitDepth::Eight);
         e.set_palette(plte);
         let mut wr = e.write_header().map_err(|e| e.to_string())?;
-        wr.write_chunk(png::chunk::ChunkType(*b"waLV"), &settings(hash(&img.px))).map_err(|e| e.to_string())?;
+        wr.write_chunk(png::chunk::ChunkType(*b"waLV"), &settings(hash(&img.px), theme)).map_err(|e| e.to_string())?;
         wr.write_image_data(&idx).map_err(|e| e.to_string())?;
     }
     Ok(Proxy { w, h, at, png: out })

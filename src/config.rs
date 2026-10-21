@@ -17,12 +17,14 @@ pub struct Config {
     pub csv: bool,
     /// wkVista shows its own RGBA frame (WA's renderer on a Direct3D 9 option)
     pub truecolor: bool,
+    /// the WA theme full-colour maps get (pngmap::THEMES: the soil behind craters, the backdrop)
+    pub map_theme: u32,
 }
 
 impl Default for Config {
     fn default() -> Self {
         // numpad + / - / *, Scroll Lock
-        Config { wheel: true, key_zoom_in: 0x6B, key_zoom_out: 0x6D, key_zoom_reset: 0x6A, key_mark: 0x91, zoom_max: 64, csv: true, truecolor: true }
+        Config { wheel: true, key_zoom_in: 0x6B, key_zoom_out: 0x6D, key_zoom_reset: 0x6A, key_mark: 0x91, zoom_max: 64, csv: true, truecolor: true, map_theme: 6 }
     }
 }
 
@@ -42,6 +44,8 @@ zoom_max = 64
 csv = 1
 # wkVista shows its own full-colour frame (1 = on; needs WA's renderer on a Direct3D 9 option)
 truecolor = 1
+# the WA theme full-colour maps get: the soil behind craters and the backdrop (a theme's name)
+map_theme = Forest
 ";
 
 fn num(v: &str) -> Option<i64> {
@@ -75,6 +79,13 @@ pub fn load(dir: &Path) -> (Config, Vec<String>) {
             continue;
         };
         let (k, n) = (k.trim(), num(v));
+        if k == "map_theme" {
+            match crate::pngmap::THEMES.iter().position(|t| t.eq_ignore_ascii_case(v.trim())) {
+                Some(i) => c.map_theme = i as u32,
+                None => bad.push(line.to_string()),
+            }
+            continue;
+        }
         match (k, n) {
             ("wheel", Some(n)) => c.wheel = n != 0,
             ("key_zoom_in", Some(n)) => c.key_zoom_in = n as u32,
