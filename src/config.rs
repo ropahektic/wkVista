@@ -24,7 +24,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         // numpad + / - / *, Scroll Lock
-        Config { wheel: true, key_zoom_in: 0x6B, key_zoom_out: 0x6D, key_zoom_reset: 0x6A, key_mark: 0x91, zoom_max: 64, csv: true, truecolor: true, map_theme: 6 }
+        Config { wheel: true, key_zoom_in: 0x6B, key_zoom_out: 0x6D, key_zoom_reset: 0x6A, key_mark: 0x91, zoom_max: 64, csv: true, truecolor: true, map_theme: 11 }
     }
 }
 

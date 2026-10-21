@@ -11,7 +11,7 @@
 //!   land keeps the bottom); a map with no air at all gets 128 rows of air on top, so WA can
 //!   place worms on it;
 //! - settings: an open map (no borders), its seed from the image, a theme (the soil behind
-//!   craters and the backdrop come from it; theme 0, Art, has white paper soil).
+//!   craters and the backdrop come from it).
 //!
 //! The original's colours are what wkVista shows in game on the land WA has not changed.
 
@@ -142,10 +142,12 @@ fn median_cut(cols: &[u32], n: usize) -> (Vec<u32>, std::collections::HashMap<u3
     (pal, map)
 }
 
-/// WA's themes in their numbering (the settings' theme word, +0x20)
-pub const THEMES: [&str; 24] = [
-    "Art", "Cheese", "Construction", "Desert", "Dungeon", "Easter", "Forest", "Fruit", "Gulf", "Hell", "Hospital", "Jungle",
-    "Manhattan", "Medieval", "Music", "Pirate", "Snow", "Space", "Sports", "Tentacle", "Time", "Tools", "Tribal", "Urban",
+/// WA's themes by number (the settings' theme word, +0x20): WA's own table, 0x649BA0 (the
+/// first five are the drawn-map themes)
+pub const THEMES: [&str; 29] = [
+    "-Beach", "-Desert", "-Farm", "-Forest", "-Hell", "Art", "Cheese", "Construction", "Desert", "Dungeon", "Easter", "Forest",
+    "Fruit", "Gulf", "Hell", "Hospital", "Jungle", "Manhattan", "Medieval", "Music", "Pirate", "Snow", "Space", "Sports",
+    "Tentacle", "Time", "Tools", "Tribal", "Urban",
 ];
 
 /// The settings chunk of an open map (wa-play maps.rs reads them as WA's loader does: +0 and

@@ -25,7 +25,7 @@ static CACHE: Mutex<Option<HashMap<PathBuf, (std::time::SystemTime, Arc<Vec<u8>>
 static RECENT: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 static TEMP_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// the theme converted maps get (config map_theme)
-static THEME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(6);
+static THEME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(11);
 
 /// WA's `User\SavedLevels`
 pub fn saved_levels() -> Option<PathBuf> {
