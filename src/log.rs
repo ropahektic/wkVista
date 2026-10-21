@@ -31,7 +31,7 @@ pub fn line(s: &str) {
 }
 
 /// The CSV header (one row per drawn frame, `Frame::row`)
-pub const CSV_HEADER: &str = "frame,zoom,ms_render,ms_zoomed,ms_rgba,zoomed,by_wa,refused,bitmap,fill,grid,pixel,vline,mark,smooth_lag";
+pub const CSV_HEADER: &str = "frame,zoom,ms_render,ms_zoomed,ms_rgba,zoomed,by_wa,refused,bitmap,fill,grid,pixel,vline,mark";
 
 /// A new game's CSV: logs/render-NNN.csv (the next free number)
 pub fn new_game(dir: &Path) -> Option<PathBuf> {

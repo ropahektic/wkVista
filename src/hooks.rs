@@ -360,10 +360,9 @@ extern "C" fn post() {
         if s.cfg.csv {
             let k = f.kinds;
             log::row(&format!(
-                "{},{},{ms:.2},{:.2},{ms_rgba:.2},{},{},{},{},{},{},{},{},{},{:.3}",
+                "{},{},{ms:.2},{:.2},{ms_rgba:.2},{},{},{},{},{},{},{},{},{}",
                 s.last_frame, f.view.zoom, f.t_zoomed, f.zoomed, f.by_wa, f.refused, k[0], k[1], k[2], k[3], k[4],
-                if mark != 0 { mark.to_string() } else { String::new() },
-                s.smooth.lag
+                if mark != 0 { mark.to_string() } else { String::new() }
             ));
             if mark != 0 || s.last_frame % 250 == 0 {
                 log::flush();
