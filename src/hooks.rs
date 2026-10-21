@@ -128,6 +128,8 @@ struct State {
     land_tried: bool,
     /// the side buffer (raster.rs Target::side)
     side: Vec<u32>,
+    /// smooth motion between game frames (smooth.rs)
+    smooth: crate::smooth::Smooth,
 }
 
 static mut STATE: Option<State> = None;
@@ -262,8 +264,13 @@ extern "C" fn pre(runtime: u32) {
             s.logged_target = false;
             s.land = None;
             s.land_tried = false;
+            s.smooth.reset();
         }
         s.last_frame = frame_no;
+        // the objects at their in-between positions for this render (put back in `post`)
+        if s.cfg.smooth {
+            s.smooth.before(world, frame_no);
+        }
         let display = r32(world + 4) as usize;
         // WA's framebuffer (the RenderContext's software buffer the backend shows)
         let (data, w, h) = (r32(rb(0x007A_0EEC)) as usize, i32_(rb(0x007A_0EF0)), i32_(rb(0x007A_0EF4)));
@@ -302,6 +309,8 @@ extern "C" fn pre(runtime: u32) {
 extern "C" fn post() {
     guard((), || unsafe {
         let s = st();
+        // the objects back where the game has them
+        s.smooth.after();
         let Some(f) = s.frame.take() else { return };
         // the frame as colours for the true colour output: WA's finished framebuffer through
         // WA's display palette (DisplayGfx +0x358D: 256 x R, G, B, flags)
@@ -658,7 +667,7 @@ pub fn install(cfg: Config, dir: std::path::PathBuf) -> Result<(), String> {
     unsafe {
         let base = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) as usize;
         BASE_DELTA.store(base.wrapping_sub(IMAGE_BASE) as u32, Ordering::Relaxed);
-        STATE = Some(State { cfg, dir, start: Instant::now(), frame: None, world: 0, last_frame: 0, refused_seen: HashSet::new(), logged_target: false, land: None, land_tried: false, side: Vec::new() });
+        STATE = Some(State { cfg, dir, start: Instant::now(), frame: None, world: 0, last_frame: 0, refused_seen: HashSet::new(), logged_target: false, land: None, land_tried: false, side: Vec::new(), smooth: crate::smooth::Smooth::new() });
         let p = std::slice::from_raw_parts(rb(0x0053_3DC0) as *const u8, 3);
         let call = std::slice::from_raw_parts(rb(0x0053_40AF) as *const u8, 5);
         let rel = i32::from_le_bytes([call[1], call[2], call[3], call[4]]);
