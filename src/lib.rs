@@ -56,7 +56,7 @@ mod dll {
         }
         crate::log::line(&format!("settings: {cfg:?}"));
         match crate::hooks::install(cfg, dir) {
-            Ok(()) => crate::log::line("hooks on: GameRender, RenderDrawingQueue, the 7 drawing functions, the window procedure"),
+            Ok(()) => crate::log::line("hooks on: GameRender, RenderDrawingQueue, the 7 drawing functions, the camera clamp, the window procedure"),
             Err(e) => crate::log::line(&format!("NOT ACTIVE: {e}")),
         }
     }

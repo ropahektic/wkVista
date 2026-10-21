@@ -17,7 +17,14 @@
 //! | 0x4F9180 / 0x4F5E40 | BitGrid pixel, clipped / not | ECX grid; x, y, colour; ret 0xC |
 //! | 0x4F9110 | BitGrid vertical line | ECX grid; x, y1, y2, colour; ret 0x10 |
 //! | 0x4F5D50 | BitGrid fill rectangle | ECX grid; x1, y1, x2, y2, colour; ret 0x14 |
+//! | 0x542F10 | ClipContext::ClampCameraToBounds | EAX viewport width, ECX bottom bound; context, viewport height, left, top, right; ret 0x14 |
 //! | 0x572660 | WA's window procedure | stdcall: the wheel and wkVista's keys |
+//!
+//! The camera: WA keeps its camera half a viewport away from the level's edges (GameRender
+//! clamps its three camera contexts each frame). Zoomed in, only the middle w/z x h/z of WA's
+//! screen is seen, so the clamp is given that size instead: WA's camera can then scroll until
+//! the zoomed view reaches the level's edge (the water, the bottom), never past it. The camera
+//! is WA's local view, not game state.
 
 use std::collections::HashSet;
 use std::ffi::c_void;
@@ -63,6 +70,11 @@ impl Regs {
     /// Stack argument `k` (1 = the first)
     unsafe fn arg(&self, k: usize) -> u32 {
         *(self as *const Regs as *const u32).add(8 + k)
+    }
+
+    /// Stack argument `k` changed before WA's function runs
+    unsafe fn set_arg(&mut self, k: usize, v: u32) {
+        *(self as *mut Regs as *mut u32).add(8 + k) = v;
     }
 }
 
@@ -172,6 +184,7 @@ thunk!(t_pixel, h_pixel, O_PIXEL, "0xC");
 thunk!(t_vline, h_vline, O_VLINE, "0x10");
 thunk!(t_grid_fill, h_grid_fill, O_GRID_FILL, "0x14");
 thunk!(t_queue, h_queue, O_QUEUE, "8");
+thunk!(t_clamp, h_clamp, O_CLAMP, "0x14");
 
 /// GameRender wrapped: `pre` (ECX the runtime), WA's own, `post`
 static mut O_RENDER: usize = 0;
@@ -478,6 +491,23 @@ extern "C" fn h_queue(r: &mut Regs) -> u32 {
     })
 }
 
+/// ClampCameraToBounds while zoomed: WA's own clamp with the size seen through the zoom (the
+/// viewport x 16 / n, rounded up), so the camera reaches the level's edges
+extern "C" fn h_clamp(r: &mut Regs) -> u32 {
+    guard(0, || unsafe {
+        let Some(f) = st().frame.as_ref() else { return 0 };
+        if !f.active {
+            return 0;
+        }
+        let z = f.view.zoom;
+        let seen = |v: u32| ((v as i32 * 16 + z - 1) / z) as u32;
+        r.eax = seen(r.eax);
+        let h = seen(r.arg(2));
+        r.set_arg(2, h);
+        0
+    })
+}
+
 // ---- input: WA's window procedure ----
 
 static mut O_WNDPROC: usize = 0;
@@ -561,7 +591,7 @@ pub fn install(cfg: Config, dir: std::path::PathBuf) -> Result<(), String> {
         if p != [0x55, 0x8B, 0xEC] || call[0] != 0xE8 || (rb(0x0053_40B4) as i32).wrapping_add(rel) as usize != rb(0x0054_2350) {
             return Err(format!("not WA 3.8.1: GameRender starts {p:02X?}, its queue call {call:02X?}"));
         }
-        let hooks: [(u32, *mut c_void, *mut usize); 10] = [
+        let hooks: [(u32, *mut c_void, *mut usize); 11] = [
             (0x0053_3DC0, t_render as *mut c_void, &raw mut O_RENDER),
             (0x0054_2350, t_queue as *mut c_void, &raw mut O_QUEUE),
             (0x0056_A700, t_bitmap as *mut c_void, &raw mut O_BITMAP),
@@ -571,6 +601,7 @@ pub fn install(cfg: Config, dir: std::path::PathBuf) -> Result<(), String> {
             (0x004F_5E40, t_pixel as *mut c_void, &raw mut O_PIXEL),
             (0x004F_9110, t_vline as *mut c_void, &raw mut O_VLINE),
             (0x004F_5D50, t_grid_fill as *mut c_void, &raw mut O_GRID_FILL),
+            (0x0054_2F10, t_clamp as *mut c_void, &raw mut O_CLAMP),
             (0x0057_2660, wndproc as *mut c_void, &raw mut O_WNDPROC),
         ];
         // every trampoline stored before any hook is on
