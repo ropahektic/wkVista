@@ -46,10 +46,7 @@ static LOGGED: AtomicBool = AtomicBool::new(false);
 static mut O_RESET: usize = 0;
 static mut O_SHOW_SW: usize = 0;
 static mut O_SHOW_SH: usize = 0;
-/// d3d9.dll in memory [start, end): WA's device is checked to be one of its objects (its vtable
-/// inside the module; WA's device may be another kind than the throwaway one, e.g. an Ex device)
-static D3D9_START: AtomicUsize = AtomicUsize::new(0);
-static D3D9_END: AtomicUsize = AtomicUsize::new(0);
+
 
 type Hr = i32;
 
@@ -107,10 +104,6 @@ pub fn install() -> Result<(), String> {
             return Err(format!("throwaway device: {hr:#x}"));
         }
         let reset = vt(dev, 16);
-        let m = lib as usize;
-        let size = *((m + *((m + 0x3C) as *const u32) as usize + 0x50) as *const u32) as usize;
-        D3D9_START.store(m, Ordering::Relaxed);
-        D3D9_END.store(m + size, Ordering::Relaxed);
         release(dev);
         release(d3d);
         DestroyWindow(hwnd);
@@ -237,10 +230,11 @@ extern "C" fn h_show(r: &mut Regs) -> u32 {
         return 0;
     }
     let shown = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        // WA's device as WA uses it (it may be wrapped by another layer: whatever WA calls is
+        // called the same way)
         let dev = *((r.ecx as usize + 0x40) as *const usize);
-        let vtab = if dev != 0 { *(dev as *const usize) } else { 0 };
-        if vtab < D3D9_START.load(Ordering::Relaxed) || vtab >= D3D9_END.load(Ordering::Relaxed) {
-            return Err(format!("backend {:#x}: no Direct3D 9 device at +0x40 ({dev:#x}, vtable {vtab:#x})", r.ecx));
+        if dev == 0 || *(dev as *const usize) == 0 {
+            return Ok(false);
         }
         // a lost device: our surface freed (a reset needs every default-pool resource gone),
         // then WA's own step (it resets the device)
