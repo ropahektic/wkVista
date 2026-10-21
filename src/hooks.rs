@@ -265,6 +265,11 @@ extern "C" fn pre(runtime: u32) {
         }
         s.last_frame = frame_no;
         let display = r32(world + 4) as usize;
+        // a resolution asked for: applied now, between frames, before the framebuffer is read
+        // (resize.rs)
+        if display != 0 {
+            crate::resize::apply(display, frame_no);
+        }
         // WA's framebuffer (the RenderContext's software buffer the backend shows)
         let (data, w, h) = (r32(rb(0x007A_0EEC)) as usize, i32_(rb(0x007A_0EF0)), i32_(rb(0x007A_0EF4)));
         // full colour: the land matched once its tile table exists
@@ -627,6 +632,10 @@ extern "system" fn wndproc(hwnd: isize, msg: u32, wp: usize, lp: isize) -> isize
                     log::line(&format!("[{}] MARK {n} (zoom {:.2}x)", st().last_frame, ZOOM.load(Ordering::Relaxed) as f64 / 16.0));
                     log::flush();
                     false
+                } else if in_game() && vk == 0x7B && unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x11) } < 0 {
+                    // Ctrl+F12: the next resolution (a test of resize.rs)
+                    crate::resize::ask_next();
+                    true
                 } else if in_game() && (vk == cfg.key_zoom_in || vk == cfg.key_zoom_out || vk == cfg.key_zoom_reset) {
                     if vk == cfg.key_zoom_reset {
                         set_zoom(16);

@@ -61,6 +61,11 @@ unsafe fn release(obj: usize) {
     }
 }
 
+/// wkVista's Direct3D surface freed (before WA resets its device)
+pub fn release_surface() {
+    unsafe { release(SURFACE.swap(0, Ordering::Relaxed)) };
+}
+
 /// The frame to show, `w` x `h`, filled by `fill` (the buffer is kept from frame to frame)
 pub fn fill(w: u32, h: u32, f: impl FnOnce(&mut [u32])) {
     let mut g = FRAME.lock().unwrap();
