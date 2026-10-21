@@ -108,3 +108,31 @@ fn same_pictures_as_wa_play() {
     println!("{checked} pictures the same as wa-play's");
     assert!(checked > 0);
 }
+
+/// env BENCH: the time a whole fixture frame takes at 1x (identity), 2x and 4x
+#[test]
+fn bench() {
+    if std::env::var("BENCH").is_err() {
+        return;
+    }
+    let dir = std::env::var("FIXTURES").unwrap_or_else(|_| "../wa-play/web/test/fixtures".into());
+    for name in ["20240211104942On-500", "ropabeatsdeanoin-500"] {
+        let Ok(b) = std::fs::read(format!("{dir}/{name}.wadl")) else { continue };
+        let (wa, ops, _images) = parse(&b);
+        for zoom in [16, 32, 64] {
+            let c = (wa.0 / 2, wa.1 / 2);
+            let view = View { zoom, centre: c, out_centre: c, wa };
+            let native = View { zoom: 16, centre: (c.0 + 1, c.1), out_centre: (c.0 + 1, c.1), wa };
+            let mut px = vec![0u8; (wa.0 * wa.1) as usize];
+            let mut t = Target { data: px.as_mut_ptr(), w: wa.0, h: wa.1, stride: wa.0 };
+            let n = 20;
+            let t0 = std::time::Instant::now();
+            for _ in 0..n {
+                for (world, op) in &ops {
+                    draw_mapped(op, &mut t, if *world || zoom == 16 { &view } else { &native });
+                }
+            }
+            println!("{name} zoom {zoom}/16: {:.2} ms a frame ({} ops)", t0.elapsed().as_secs_f64() * 1e3 / n as f64, ops.len());
+        }
+    }
+}

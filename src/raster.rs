@@ -171,8 +171,15 @@ fn shade(op: &Op, a: (i32, i32, i32, i32), x_: i32, y_: i32, d: u8) -> Option<u8
     }
 }
 
+thread_local! {
+    /// the WA column of each output column of the operation being drawn (kept between calls)
+    static XS: std::cell::RefCell<Vec<i32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// One operation onto `t` through `view` (mapped: every output pixel shows the WA pixel it maps
-/// back to). The caller has checked it (`check`).
+/// back to). The caller has checked it (`check`). The mapping is monotonic and separable, so
+/// the output columns showing the operation's area are one run, found once; each row is then
+/// drawn by a loop for the operation's kind (the same rule per pixel as `shade`).
 pub fn draw_mapped(op: &Op, t: &mut Target, view: &View) {
     let Some(a) = area(op, view.wa) else { return };
     let (ol, ot, or, ob) = view.forward(a.0, a.1, a.2, a.3);
@@ -180,21 +187,143 @@ pub fn draw_mapped(op: &Op, t: &mut Target, view: &View) {
     if ol >= or || ot >= ob {
         return;
     }
-    // the mapping is separable: each output column and row maps on its own
-    let xs: Vec<i32> = (ol..or).map(|ox| view.back(ox, 0).0).collect();
-    for oy in ot..ob {
-        let y = view.back(0, oy).1;
-        if y < a.1 || y >= a.3 {
-            continue;
+    XS.with(|xs| {
+        let mut xs = xs.borrow_mut();
+        xs.clear();
+        let mut c0 = -1;
+        for ox in ol..or {
+            let x = view.back(ox, 0).0;
+            if x >= a.0 && x < a.2 {
+                if c0 < 0 {
+                    c0 = ox;
+                }
+                xs.push(x);
+            }
         }
-        let row = unsafe { t.data.add((oy * t.stride) as usize) };
-        for (k, &x) in xs.iter().enumerate() {
-            if x < a.0 || x >= a.2 {
+        if xs.is_empty() {
+            return;
+        }
+        for oy in ot..ob {
+            let y = view.back(0, oy).1;
+            if y < a.1 || y >= a.3 {
                 continue;
             }
-            let p = unsafe { row.add(ol as usize + k) };
-            if let Some(v) = shade(op, a, x, y, unsafe { *p }) {
-                unsafe { *p = v };
+            let row = unsafe { std::slice::from_raw_parts_mut(t.data.add((oy * t.stride + c0) as usize), xs.len()) };
+            draw_row(op, a, &xs, y, row);
+        }
+    })
+}
+
+/// One output row of an operation: `row[k]` shows WA's pixel (xs[k], y), all inside the area
+#[inline]
+fn draw_row(op: &Op, a: (i32, i32, i32, i32), xs: &[i32], y: i32, row: &mut [u8]) {
+    match *op {
+        Op::Fill { colour, .. } | Op::Pixel { colour, .. } | Op::VLine { colour, .. } => row.fill(colour),
+        Op::Bitmap { x: bx, y: by, src, keyed, key, .. } => {
+            let sy = y - by;
+            if sy < 0 || sy >= src.h {
+                // outside the surface the source reads 0
+                if !keyed || key != 0 {
+                    row.fill(0);
+                }
+                return;
+            }
+            let srow = unsafe { src.data.add((sy * src.stride) as usize) };
+            // 1:1 columns inside the surface (no zoom): the source row as a slice
+            let (c0, n) = (xs[0] - bx, xs.len() as i32);
+            if xs[xs.len() - 1] - xs[0] + 1 == n && c0 >= 0 && c0 + n <= src.w {
+                let sr = unsafe { std::slice::from_raw_parts(srow.add(c0 as usize), n as usize) };
+                if keyed {
+                    row.iter_mut().zip(sr).for_each(|(o, &s)| {
+                        if s != key {
+                            *o = s;
+                        }
+                    });
+                } else {
+                    row.copy_from_slice(sr);
+                }
+                return;
+            }
+            for (o, &x) in row.iter_mut().zip(xs) {
+                let c = x - bx;
+                let s = if (c as u32) < src.w as u32 { unsafe { *srow.add(c as usize) } } else { 0 };
+                if !keyed || s != key {
+                    *o = s;
+                }
+            }
+        }
+        Op::Grid { x: gx, y: gy, w: gw, src, sx, sy, lut, mode, .. } => {
+            if lut.is_some() {
+                // a blend table (its groups of 4 need the whole row): the reference rule
+                for (o, &x) in row.iter_mut().zip(xs) {
+                    if let Some(v) = shade(op, a, x, y, *o) {
+                        *o = v;
+                    }
+                }
+                return;
+            }
+            let r = sy + y - gy;
+            if r < 0 || r >= src.h {
+                // source 0: only mode 0 draws it
+                if mode & 0xFFFF == 0 {
+                    row.fill(0);
+                }
+                return;
+            }
+            let srow = unsafe { src.data.add((r * src.stride) as usize) };
+            let mirrored = matches!(mode >> 16, 1 | 0xA);
+            let (base, step) = if mirrored { (sx + gx + gw - 1, -1) } else { (sx - gx, 1) };
+            let at = |x: i32| -> u8 {
+                let c = base + step * x;
+                if (c as u32) < src.w as u32 { unsafe { *srow.add(c as usize) } } else { 0 }
+            };
+            // 1:1 columns, not mirrored, inside the source (no zoom): the source row as a slice
+            let (c0, n) = (base + xs[0], xs.len() as i32);
+            if !mirrored && xs[xs.len() - 1] - xs[0] + 1 == n && c0 >= 0 && c0 + n <= src.w {
+                let sr = unsafe { std::slice::from_raw_parts(srow.add(c0 as usize), n as usize) };
+                let it = row.iter_mut().zip(sr);
+                match mode & 0xFFFF {
+                    0 => row.copy_from_slice(sr),
+                    1 => it.for_each(|(o, &s)| {
+                        if s != 0 {
+                            *o = s;
+                        }
+                    }),
+                    2 => it.for_each(|(o, &s)| {
+                        if s != 0 && *o != 0 {
+                            *o = s;
+                        }
+                    }),
+                    3 => it.for_each(|(o, &s)| {
+                        if s != 0 && *o == 0 {
+                            *o = s;
+                        }
+                    }),
+                    _ => {}
+                }
+                return;
+            }
+            match mode & 0xFFFF {
+                0 => row.iter_mut().zip(xs).for_each(|(o, &x)| *o = at(x)),
+                1 => row.iter_mut().zip(xs).for_each(|(o, &x)| {
+                    let s = at(x);
+                    if s != 0 {
+                        *o = s;
+                    }
+                }),
+                2 => row.iter_mut().zip(xs).for_each(|(o, &x)| {
+                    let s = at(x);
+                    if s != 0 && *o != 0 {
+                        *o = s;
+                    }
+                }),
+                3 => row.iter_mut().zip(xs).for_each(|(o, &x)| {
+                    let s = at(x);
+                    if s != 0 && *o == 0 {
+                        *o = s;
+                    }
+                }),
+                _ => {}
             }
         }
     }
