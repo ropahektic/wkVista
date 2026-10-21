@@ -19,8 +19,8 @@ and copy it into the WA folder.
 ## Credits
 
 Loading full-colour maps by handing WA a converted proxy when it opens the file was first done
-by [wkRGBA](https://github.com/rUNaW4y/wkRGBA) (rUNaW4y). wkVista's implementation is its own;
-the idea is theirs.
+by [wkRGBA](https://github.com/rUNaW4y/wkRGBA) (rUNaW4y). wkVista does things differently but
+the idea is theirs. 
 
 ## Build
 
