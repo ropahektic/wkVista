@@ -5,8 +5,10 @@
 //! 640 x 32, width and height multiples of 8, palette entry 0 black (air), at most 0x71 colours,
 //! and a 40-byte `waLV` settings chunk. The proxy:
 //! - land = alpha >= 128 (any colour, black included), air = the rest;
-//! - colours: the land's, reduced to 112 by median cut (entry 0 stays air; a land colour of pure
-//!   black is stored as (8, 8, 8), it is land);
+//! - colours: the land's, reduced to 64 by median cut (entry 0 stays air; a land colour of pure
+//!   black is stored as (8, 8, 8), it is land). 64 as WA's own image import makes them (65
+//!   palette entries): WA fills craters with darker copies of the map's colours, which need
+//!   palette slots of their own; with more colours they don't fit and craters show white;
 //! - size: padded with air to multiples of 8 and at least 640 x 32, on the right and on top (the
 //!   land keeps the bottom); a map with no air at all gets 128 rows of air on top, so WA can
 //!   place worms on it;
@@ -166,6 +168,9 @@ pub fn hash(px: &[u32]) -> u64 {
     px.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &p| (h ^ p as u64).wrapping_mul(0x100_0000_01b3))
 }
 
+/// The colours a proxy map gets (as WA's own image import: see the module notes)
+pub const MAP_COLOURS: usize = 64;
+
 /// The proxy's size for an image of `w` x `h` (with or without any air) and the original's
 /// top-left in it
 pub fn layout(w: u32, h: u32, any_air: bool) -> (u32, u32, (u32, u32)) {
@@ -194,7 +199,7 @@ pub fn proxy(img: &Rgba, theme: u32) -> Result<Proxy, String> {
         return Err(format!("{}x{} is bigger than WA's maps", img.w, img.h));
     }
     let land: Vec<u32> = img.px.iter().copied().filter(|&p| is_land(p)).collect();
-    let (mut pal, map) = median_cut(&land, 112);
+    let (mut pal, map) = median_cut(&land, MAP_COLOURS);
     for c in pal.iter_mut() {
         if *c == 0 {
             *c = 0x08_0808;

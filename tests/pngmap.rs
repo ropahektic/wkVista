@@ -17,6 +17,8 @@ fn check(img: &Rgba) {
     assert!(w >= 640 && h >= 32 && w % 8 == 0 && h % 8 == 0, "{w}x{h}");
     let pal = info.palette.clone().unwrap();
     assert!(pal.len() / 3 <= 0x71 && pal[..3] == [0, 0, 0], "{} colours, entry 0 {:?}", pal.len() / 3, &pal[..3]);
+    // 64 colours and air, as WA's own image import (room for the crater shades)
+    assert!(pal.len() / 3 <= 65, "{} palette entries", pal.len() / 3);
     let walv = p.png.windows(8).position(|c| &c[4..] == b"waLV").expect("waLV chunk");
     assert_eq!(u32::from_be_bytes(p.png[walv..walv + 4].try_into().unwrap()), 40);
     // the theme word (+0x20): Forest, as WA's editor writes it
