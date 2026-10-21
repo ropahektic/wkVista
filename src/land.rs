@@ -3,8 +3,8 @@
 //! WA keeps the land as tiles (DisplayGfx +0x4DD8: an object whose +4 is the tile bitmaps, row
 //! by row; +0x4DDC / +0x4DE0 the land's width and height, +0x4DE4 / +0x4DE8 a tile's; drawn by
 //! DrawTiledTerrain 0x56C5A0 as BlitBitmapClipped calls). At a game's first frame the tiles are
-//! copied (the land as WA made it) and the land's shape is matched against the full-colour maps
-//! this module converted (files.rs): where it matches, each untouched land pixel (the same as at
+//! copied (the land as WA made it) and the land's shape is matched against the full-colour
+//! images in SavedLevels whose proxy has the land's size (files.rs): where it matches, each untouched land pixel (the same as at
 //! the start) shows the original's colour; anything WA changed shows WA's.
 
 use std::collections::HashMap;
@@ -63,16 +63,17 @@ pub unsafe fn build(display: usize, frame: u32) -> Option<Land> {
     }
     let land_px = snap.iter().filter(|&&p| p != 0).count();
     log::line(&format!("[{frame}] land {w}x{h} in {} tiles of {tw}x{th}, {land_px} land pixels", tiles.len()));
-    // the converted maps, most recent first: the original's shape at a few places in the land
-    for e in files::entries() {
-        let Ok(bytes) = std::fs::read(&e.source) else { continue };
+    // the full-colour images whose proxy has the land's size (the ones WA opened first): the
+    // original's shape at a few places in the land
+    for source in files::candidates(w, h) {
+        let Ok(bytes) = std::fs::read(&source) else { continue };
         let Ok(img) = pngmap::decode(&bytes) else { continue };
+        let (pw, ph, at) = pngmap::layout(img.w, img.h, img.px.iter().any(|&p| !pngmap::is_land(p)));
         // the proxy's top-left in the land: the same place, bottom-aligned, centred
-        let (pw, ph) = (e.w, e.h);
         let cands = [(0i64, 0i64), (0, h as i64 - ph as i64), ((w as i64 - pw as i64) / 2, h as i64 - ph as i64), ((w as i64 - pw as i64) / 2, (h as i64 - ph as i64) / 2)];
         let mut tried = Vec::new();
         for &(px, py) in &cands {
-            let (ox, oy) = (px + e.at.0 as i64, py + e.at.1 as i64);
+            let (ox, oy) = (px + at.0 as i64, py + at.1 as i64);
             let (mut same, mut total) = (0u64, 0u64);
             for y in (0..img.h as i64).step_by(3) {
                 for x in (0..img.w as i64).step_by(3) {
@@ -98,11 +99,11 @@ pub unsafe fn build(display: usize, frame: u32) -> Option<Land> {
                         }
                     }
                 }
-                log::line(&format!("[{frame}] land is {} at {:?} (tried {}): full colour on", e.source.display(), (ox, oy), tried.join(", ")));
+                log::line(&format!("[{frame}] land is {} at {:?} (tried {}): full colour on", source.display(), (ox, oy), tried.join(", ")));
                 return Some(Land { w, h, tiles, snap, rgba });
             }
         }
-        log::line(&format!("[{frame}] land is not {} (tried {})", e.source.display(), tried.join(", ")));
+        log::line(&format!("[{frame}] land is not {} (tried {})", source.display(), tried.join(", ")));
     }
     None
 }

@@ -154,15 +154,32 @@ pub fn hash(px: &[u32]) -> u64 {
     px.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &p| (h ^ p as u64).wrapping_mul(0x100_0000_01b3))
 }
 
-pub fn proxy(img: &Rgba) -> Result<Proxy, String> {
-    let any_air = img.px.iter().any(|&p| !is_land(p));
+/// The proxy's size for an image of `w` x `h` (with or without any air) and the original's
+/// top-left in it
+pub fn layout(w: u32, h: u32, any_air: bool) -> (u32, u32, (u32, u32)) {
     let top = if any_air { 0 } else { 128 };
     let round = |v: u32, min: u32| v.max(min).div_ceil(8) * 8;
-    let (w, h) = (round(img.w, 640), round(img.h + top, 32));
+    let (pw, ph) = (round(w, 640), round(h + top, 32));
+    (pw, ph, (0, ph - h))
+}
+
+/// A full-colour image's size from its file, without decoding the pixels
+pub fn size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        let mut d = jpeg_decoder::Decoder::new(bytes);
+        d.read_info().ok()?;
+        let i = d.info()?;
+        return Some((i.width as u32, i.height as u32));
+    }
+    (bytes.len() >= 24).then(|| (u32::from_be_bytes(bytes[16..20].try_into().unwrap()), u32::from_be_bytes(bytes[20..24].try_into().unwrap())))
+}
+
+pub fn proxy(img: &Rgba) -> Result<Proxy, String> {
+    let any_air = img.px.iter().any(|&p| !is_land(p));
+    let (w, h, at) = layout(img.w, img.h, any_air);
     if w >= 0x6F00 || h >= 0x7760 {
         return Err(format!("{}x{} is bigger than WA's maps", img.w, img.h));
     }
-    let at = (0, h - img.h);
     let land: Vec<u32> = img.px.iter().copied().filter(|&p| is_land(p)).collect();
     let (mut pal, map) = median_cut(&land, 112);
     for c in pal.iter_mut() {

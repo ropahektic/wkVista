@@ -1,16 +1,15 @@
-//! Full-colour PNG maps in WA's map list. WA opens map files with CreateFileA / CreateFileW
-//! (its import table is patched): when it opens a full-colour PNG under `User\SavedLevels`
-//! (8-bit RGB or RGBA, which WA can't load), it gets a handle to the map's proxy instead
-//! (pngmap.rs: the same map as a palette PNG WA accepts). Opened for writing (WA's editor saving
-//! it), the proxy is written, never the original.
-//!
-//! The proxies are kept in `wkVista\maps\` beside the DLL with `index.txt` (one line a map:
-//! proxy width, height, the original's place in it, the original's path), which the game uses
-//! to find the original's colours (land.rs).
+//! Full-colour maps in WA's map list. WA opens map files with CreateFileA / CreateFileW (its
+//! import table is patched): when it opens a full-colour image under `User\SavedLevels` (a PNG
+//! with 8-bit RGB or RGBA, or a JPEG, which WA can't load), it gets a handle to the map's proxy
+//! instead (pngmap.rs: the same map as a palette PNG WA accepts). The proxy is a temporary file
+//! Windows deletes when WA closes it: nothing is kept on disk, the original is never written
+//! (WA's editor saving it writes the temporary file). Conversions are kept in memory for the
+//! session.
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Memory::{VirtualProtect, PAGE_READWRITE};
@@ -20,79 +19,77 @@ use crate::{log, pngmap};
 static DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 static mut O_CFA: usize = 0;
 static mut O_CFW: usize = 0;
+/// the session's conversions: original -> (its modification time, the proxy's bytes)
+static CACHE: Mutex<Option<HashMap<PathBuf, (std::time::SystemTime, Arc<Vec<u8>>)>>> = Mutex::new(None);
+/// the originals WA opened this session, the latest last (tried first in game)
+static RECENT: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+static TEMP_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// A map this module made a proxy for (index.txt)
-#[derive(Clone, Debug)]
-pub struct Entry {
-    pub w: u32,
-    pub h: u32,
-    pub at: (u32, u32),
-    pub source: PathBuf,
+/// WA's `User\SavedLevels`
+pub fn saved_levels() -> Option<PathBuf> {
+    Some(DIR.lock().unwrap().as_ref()?.join("User").join("SavedLevels"))
 }
 
-fn maps_dir() -> Option<PathBuf> {
-    DIR.lock().unwrap().as_ref().map(|d| d.join("wkVista").join("maps"))
-}
-
-/// The maps with proxies, the most recently made first
-pub fn entries() -> Vec<Entry> {
-    let Some(d) = maps_dir() else { return Vec::new() };
-    let Ok(t) = std::fs::read_to_string(d.join("index.txt")) else { return Vec::new() };
-    let mut v: Vec<Entry> = t
-        .lines()
-        .filter_map(|l| {
-            let mut f = l.splitn(5, '\t');
-            let n = |s: Option<&str>| s?.parse::<u32>().ok();
-            Some(Entry { w: n(f.next())?, h: n(f.next())?, at: (n(f.next())?, n(f.next())?), source: PathBuf::from(f.next()?) })
+/// The full-colour images that could be a land of `w` x `h` (their proxy has that size): the
+/// ones WA opened this session first, then the rest of SavedLevels
+pub fn candidates(w: u32, h: u32) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = RECENT.lock().unwrap().iter().rev().cloned().collect();
+    if let Some(dir) = saved_levels() {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if !v.contains(&p) {
+                    v.push(p);
+                }
+            }
+        }
+    }
+    v.retain(|p| {
+        let Ok(b) = std::fs::read(p) else { return false };
+        if b.len() < 26 || !pngmap::full_colour(&b[..26]) {
+            return false;
+        }
+        let Some((iw, ih)) = pngmap::size(&b) else { return false };
+        [true, false].iter().any(|&air| {
+            let (pw, ph, _) = pngmap::layout(iw, ih, air);
+            (pw, ph) == (w, h)
         })
-        .collect();
-    v.reverse();
+    });
     v
 }
 
-fn add_entry(e: &Entry) {
-    let Some(d) = maps_dir() else { return };
-    let mut all = entries();
-    all.retain(|x| x.source != e.source);
-    all.reverse();
-    all.push(e.clone());
-    let text: String = all.iter().map(|x| format!("{}\t{}\t{}\t{}\t{}\n", x.w, x.h, x.at.0, x.at.1, x.source.display())).collect();
-    let _ = std::fs::write(d.join("index.txt"), text);
-}
-
-/// The proxy for a full-colour map under SavedLevels (made when missing or older than the
-/// original); None for any other file
-fn proxy_for(path: &Path) -> Option<PathBuf> {
+/// The proxy's bytes for a full-colour image under SavedLevels; None for any other file
+fn proxy_for(path: &Path) -> Option<Arc<Vec<u8>>> {
     let lower = path.to_string_lossy().to_lowercase().replace('/', "\\");
-    if !lower.ends_with(".png") || !lower.contains("\\savedlevels\\") {
+    if !lower.contains("\\savedlevels\\") {
         return None;
     }
     let mut head = [0u8; 26];
     use std::io::Read;
     let n = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
-    let head = &head[..n];
-    if !pngmap::full_colour(head) {
+    if !pngmap::full_colour(&head[..n]) {
         return None;
     }
-    let dir = maps_dir()?;
-    let name = path.file_name()?.to_string_lossy().to_string();
-    let out = dir.join(&name);
-    let fresh = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-    if out.exists() && fresh(&out) >= fresh(path) && entries().iter().any(|e| e.source == path) {
-        return Some(out);
+    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    {
+        let mut recent = RECENT.lock().unwrap();
+        recent.retain(|p| p != path);
+        recent.push(path.to_path_buf());
     }
+    if let Some((t, b)) = CACHE.lock().unwrap().get_or_insert_with(HashMap::new).get(path) {
+        if *t == modified {
+            return Some(b.clone());
+        }
+    }
+    let name = path.file_name()?.to_string_lossy().to_string();
     let t = std::time::Instant::now();
     let made = std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| pngmap::decode(&b)).and_then(|img| pngmap::proxy(&img).map(|p| (img, p)));
     match made {
         Ok((img, p)) => {
-            let _ = std::fs::create_dir_all(&dir);
-            if let Err(e) = std::fs::write(&out, &p.png) {
-                log::line(&format!("map {name}: proxy not written: {e}"));
-                return None;
-            }
-            add_entry(&Entry { w: p.w, h: p.h, at: p.at, source: path.to_path_buf() });
             log::line(&format!("map {name}: {}x{} full colour -> WA map {}x{} (original at {:?}), {:.0} ms", img.w, img.h, p.w, p.h, p.at, t.elapsed().as_secs_f64() * 1e3));
-            Some(out)
+            let b = Arc::new(p.png);
+            CACHE.lock().unwrap().get_or_insert_with(HashMap::new).insert(path.to_path_buf(), (modified, b.clone()));
+            Some(b)
         }
         Err(e) => {
             log::line(&format!("map {name}: not converted: {e}"));
@@ -101,22 +98,31 @@ fn proxy_for(path: &Path) -> Option<PathBuf> {
     }
 }
 
-fn wide(p: &Path) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    p.as_os_str().encode_wide().chain([0]).collect()
+/// The proxy as a temporary file deleted when WA closes the handle, at its start
+fn temp_handle(bytes: &[u8]) -> Option<*mut c_void> {
+    use std::io::{Seek, Write};
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::IntoRawHandle;
+    let n = TEMP_N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let p = std::env::temp_dir().join(format!("wkVista-{}-{n}.png", std::process::id()));
+    // FILE_SHARE_READ | WRITE | DELETE; FILE_ATTRIBUTE_TEMPORARY; FILE_FLAG_DELETE_ON_CLOSE
+    let mut f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).share_mode(7).attributes(0x100).custom_flags(0x0400_0000).open(&p).ok()?;
+    f.write_all(bytes).ok()?;
+    f.rewind().ok()?;
+    Some(f.into_raw_handle())
 }
 
 type CreateW = extern "system" fn(*const u16, u32, u32, *mut c_void, u32, u32, *mut c_void) -> *mut c_void;
 type CreateA = extern "system" fn(*const u8, u32, u32, *mut c_void, u32, u32, *mut c_void) -> *mut c_void;
 
-/// WA's CreateFile on `path`: the proxy's path instead for a full-colour map (written to when
-/// WA writes)
-fn swap(path: &Path, access: u32) -> Option<PathBuf> {
-    let p = std::panic::catch_unwind(|| proxy_for(path)).ok().flatten()?;
+/// WA's CreateFile on `path`: a handle to the proxy for a full-colour map (WA writing goes to
+/// the temporary file: the original is kept)
+fn swap(path: &Path, access: u32) -> Option<*mut c_void> {
+    let h = std::panic::catch_unwind(|| proxy_for(path).and_then(|b| temp_handle(&b))).ok().flatten()?;
     if access & 0x4000_0000 != 0 {
-        log::line(&format!("map {}: WA writes it: the proxy is written, the original kept", path.display()));
+        log::line(&format!("map {}: WA writes it: not kept (the original is never written)", path.display()));
     }
-    Some(p)
+    Some(h)
 }
 
 extern "system" fn cfw(name: *const u16, access: u32, share: u32, sa: *mut c_void, disp: u32, flags: u32, tmpl: *mut c_void) -> *mut c_void {
@@ -124,8 +130,8 @@ extern "system" fn cfw(name: *const u16, access: u32, share: u32, sa: *mut c_voi
     if !name.is_null() {
         let n = unsafe { (0..).take_while(|&i| *name.add(i) != 0).count() };
         let path = PathBuf::from(String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(name, n) }));
-        if let Some(p) = swap(&path, access) {
-            return orig(wide(&p).as_ptr(), access, share, sa, disp, flags, tmpl);
+        if let Some(h) = swap(&path, access) {
+            return h;
         }
     }
     orig(name, access, share, sa, disp, flags, tmpl)
@@ -136,9 +142,8 @@ extern "system" fn cfa(name: *const u8, access: u32, share: u32, sa: *mut c_void
         let n = unsafe { (0..).take_while(|&i| *name.add(i) != 0).count() };
         // WA's paths are in the ANSI code page; a full-colour map's path goes the wide way
         let path = PathBuf::from(String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(name, n) }).to_string());
-        if let Some(p) = swap(&path, access) {
-            let orig: CreateW = unsafe { std::mem::transmute(O_CFW) };
-            return orig(wide(&p).as_ptr(), access, share, sa, disp, flags, tmpl);
+        if let Some(h) = swap(&path, access) {
+            return h;
         }
     }
     let orig: CreateA = unsafe { std::mem::transmute(O_CFA) };
