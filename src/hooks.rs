@@ -31,7 +31,7 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::time::Instant;
 
-use crate::raster::{check, draw_mapped, Clip, Op, Src, Target, View};
+use crate::raster::{check, draw_mapped, Clip, LandTag, Op, Src, Target, View};
 use crate::{config::Config, log};
 
 const IMAGE_BASE: usize = 0x0040_0000;
@@ -98,6 +98,9 @@ enum Space {
 struct Frame {
     /// this frame is drawn through the view
     active: bool,
+    /// full colour: a converted map's land (wkVista draws everything, HUD included, and keeps
+    /// the side buffer)
+    tc: bool,
     space: Space,
     display: usize,
     view: View,
@@ -120,6 +123,11 @@ struct State {
     last_frame: u32,
     refused_seen: HashSet<String>,
     logged_target: bool,
+    /// the game's land matched to a full-colour map (land.rs); tried once a game
+    land: Option<crate::land::Land>,
+    land_tried: bool,
+    /// the side buffer (raster.rs Target::side)
+    side: Vec<u32>,
 }
 
 static mut STATE: Option<State> = None;
@@ -252,20 +260,35 @@ extern "C" fn pre(runtime: u32) {
             let csv = if s.cfg.csv { log::new_game(&s.dir) } else { None };
             log::line(&format!("[{frame_no}] game: world {world:#x}{}", csv.map(|p| format!(", per-frame log {}", p.display())).unwrap_or_default()));
             s.logged_target = false;
+            s.land = None;
+            s.land_tried = false;
         }
         s.last_frame = frame_no;
         let display = r32(world + 4) as usize;
         // WA's framebuffer (the RenderContext's software buffer the backend shows)
         let (data, w, h) = (r32(rb(0x007A_0EEC)) as usize, i32_(rb(0x007A_0EF0)), i32_(rb(0x007A_0EF4)));
+        // full colour: the land matched once its tile table exists
+        if s.cfg.truecolor && !s.land_tried && display != 0 && r32(display + 0x4DD8) != 0 {
+            s.land_tried = true;
+            s.land = crate::land::build(display, frame_no);
+        }
+        let tc = s.land.is_some() && data != 0;
+        let side = if tc {
+            s.side.resize((w * h) as usize, 0);
+            s.side.as_mut_ptr()
+        } else {
+            std::ptr::null_mut()
+        };
         let zoom = ZOOM.load(Ordering::Relaxed);
-        let active = zoom != 16 && data != 0 && w > 0 && h > 0 && display != 0;
+        let active = (zoom != 16 || tc) && data != 0 && w > 0 && h > 0 && display != 0;
         let centre = (w / 2, h / 2);
         s.frame = Some(Frame {
             active,
+            tc,
             space: Space::Screen,
             display,
             view: View { zoom, centre, out_centre: centre, wa: (w, h) },
-            target: Target { data: data as *mut u8, w, h, stride: w },
+            target: Target { data: data as *mut u8, w, h, stride: w, side },
             zoomed: 0,
             by_wa: 0,
             refused: 0,
@@ -290,11 +313,22 @@ extern "C" fn post() {
                 *c = (*p as u32) << 16 | (*p.add(1) as u32) << 8 | *p.add(2) as u32;
             }
             let (w, h, stride) = (f.target.w as usize, f.target.h as usize, f.target.stride as usize);
+            let land = s.land.as_ref().filter(|_| f.tc);
+            let side = &s.side;
             crate::present::fill(w as u32, h as u32, |px| {
                 for y in 0..h {
                     let src = std::slice::from_raw_parts(f.target.data.add(y * stride), w);
-                    for (o, &i) in px[y * w..(y + 1) * w].iter_mut().zip(src) {
-                        *o = pal[i as usize];
+                    let row = &mut px[y * w..(y + 1) * w];
+                    match land {
+                        // untouched land: the original's colour
+                        Some(l) => {
+                            let sd = &side[y * w..(y + 1) * w];
+                            for ((o, &i), &k) in row.iter_mut().zip(src).zip(sd) {
+                                let c = if k != 0 { l.rgba[k as usize - 1] } else { 0 };
+                                *o = if c != 0 { c & 0xFF_FFFF } else { pal[i as usize] };
+                            }
+                        }
+                        None => row.iter_mut().zip(src).for_each(|(o, &i)| *o = pal[i as usize]),
                     }
                 }
             });
@@ -332,7 +366,8 @@ fn drawing() -> Option<&'static mut Frame> {
     if !f.active {
         return None;
     }
-    if f.space == Space::Screen {
+    // the HUD: WA's own, unless full colour (then wkVista draws it 1:1, keeping the side buffer)
+    if f.space == Space::Screen && !f.tc {
         f.by_wa += 1;
         return None;
     }
@@ -350,7 +385,9 @@ fn draw(f: &mut Frame, op: Op, kind: usize) -> bool {
         return false;
     }
     let t = Instant::now();
-    draw_mapped(&op, &mut f.target, &f.view);
+    let native = View { zoom: 16, centre: f.view.out_centre, out_centre: f.view.out_centre, wa: f.view.wa };
+    let view = if f.space == Space::World { f.view } else { native };
+    draw_mapped(&op, &mut f.target, &view);
     f.t_zoomed += t.elapsed().as_secs_f64() * 1e3;
     f.zoomed += 1;
     f.kinds[kind] += 1;
@@ -385,7 +422,12 @@ extern "C" fn h_bitmap(r: &mut Regs) -> u32 {
         }
         let (sw, sh) = (i32_(s + 4), i32_(s + 8));
         let src = Src { data: r32(s + 0xC) as *const u8, w: sw, h: sh, stride: sw };
-        let op = Op::Bitmap { x, y, w: r.edx as i32, h, src, keyed: flags & 2 != 0, key: *((s + 0x10) as *const u8), clip: clip_at(r.eax as usize + 0x3550) };
+        // a landscape tile: its place in the land (full colour)
+        let land = st().land.as_ref().filter(|_| f.tc).and_then(|l| {
+            let &(x0, y0) = l.tiles.get(&bitmap)?;
+            Some(LandTag { x0: x0 as i32, y0: y0 as i32, lw: l.w as i32, lh: l.h as i32, snap: l.snap.as_ptr() })
+        });
+        let op = Op::Bitmap { x, y, w: r.edx as i32, h, src, keyed: flags & 2 != 0, key: *((s + 0x10) as *const u8), clip: clip_at(r.eax as usize + 0x3550), land };
         draw(f, op, 0) as u32
     })
 }
@@ -605,7 +647,7 @@ pub fn install(cfg: Config, dir: std::path::PathBuf) -> Result<(), String> {
     unsafe {
         let base = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) as usize;
         BASE_DELTA.store(base.wrapping_sub(IMAGE_BASE) as u32, Ordering::Relaxed);
-        STATE = Some(State { cfg, dir, start: Instant::now(), frame: None, world: 0, last_frame: 0, refused_seen: HashSet::new(), logged_target: false });
+        STATE = Some(State { cfg, dir, start: Instant::now(), frame: None, world: 0, last_frame: 0, refused_seen: HashSet::new(), logged_target: false, land: None, land_tried: false, side: Vec::new() });
         let p = std::slice::from_raw_parts(rb(0x0053_3DC0) as *const u8, 3);
         let call = std::slice::from_raw_parts(rb(0x0053_40AF) as *const u8, 5);
         let rel = i32::from_le_bytes([call[1], call[2], call[3], call[4]]);

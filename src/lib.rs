@@ -11,6 +11,7 @@
 #![allow(non_snake_case)]
 
 pub mod config;
+pub mod pngmap;
 pub mod raster;
 
 #[cfg(all(windows, target_arch = "x86"))]
@@ -19,6 +20,10 @@ mod hooks;
 mod log;
 #[cfg(all(windows, target_arch = "x86"))]
 mod present;
+#[cfg(all(windows, target_arch = "x86"))]
+mod files;
+#[cfg(all(windows, target_arch = "x86"))]
+mod land;
 
 #[cfg(all(windows, target_arch = "x86"))]
 mod dll {
@@ -58,6 +63,9 @@ mod dll {
         }
         crate::log::line(&format!("settings: {cfg:?}"));
         if cfg.truecolor {
+            if let Err(e) = crate::files::install(&dir) {
+                crate::log::line(&format!("full-colour maps unavailable: {e}"));
+            }
             match crate::present::install() {
                 Ok(()) => crate::log::line("true colour: Direct3D 9 Present hooked (shown when WA's renderer is a Direct3D 9 option)"),
                 Err(e) => crate::log::line(&format!("true colour unavailable: {e}")),

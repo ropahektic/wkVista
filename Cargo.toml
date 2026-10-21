@@ -10,9 +10,11 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 minhook = "0.8"
+png = "0.17"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
     "Win32_System_SystemServices",
     "Win32_UI_WindowsAndMessaging",
 ] }

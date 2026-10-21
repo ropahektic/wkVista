@@ -37,7 +37,7 @@ fn parse(b: &[u8]) -> ((i32, i32), Vec<(bool, Op)>, std::collections::HashMap<u3
         let (kind, world) = (w[p] & 0xFF, (w[p] >> 8) & 1 == 1);
         let q = &w[p + 1..];
         let (op, len) = match kind {
-            1 => (Op::Bitmap { x: q[0] as i32, y: q[1] as i32, w: q[2] as i32, h: q[3] as i32, src: src_of(&images, q[4]), keyed: q[5] != 0, key: q[6] as u8, clip: clip(&q[7..11]) }, 11),
+            1 => (Op::Bitmap { x: q[0] as i32, y: q[1] as i32, w: q[2] as i32, h: q[3] as i32, src: src_of(&images, q[4]), keyed: q[5] != 0, key: q[6] as u8, clip: clip(&q[7..11]), land: None }, 11),
             2 | 6 => (Op::Fill { x1: q[0] as i32, y1: q[1] as i32, x2: q[2] as i32, y2: q[3] as i32, colour: q[4] as u8, clip: clip(&q[5..9]) }, 9),
             3 => {
                 let lut = (q[7] != u32::MAX).then(|| images[&q[7]].px.as_ptr());
@@ -94,7 +94,7 @@ fn same_pictures_as_wa_play() {
             let view = View { zoom, centre, out_centre: oc, wa };
             let native = View { zoom: 16, centre: oc, out_centre: oc, wa };
             let mut px = vec![0u8; (out[0] * out[1]) as usize];
-            let mut t = Target { data: px.as_mut_ptr(), w: out[0], h: out[1], stride: out[0] };
+            let mut t = Target { data: px.as_mut_ptr(), w: out[0], h: out[1], stride: out[0], side: std::ptr::null_mut() };
             for (world, op) in &ops {
                 check(op).unwrap_or_else(|e| panic!("{name}: {e}"));
                 draw_mapped(op, &mut t, if *world && zoom != 16 { &view } else { &native });
@@ -124,7 +124,7 @@ fn bench() {
             let view = View { zoom, centre: c, out_centre: c, wa };
             let native = View { zoom: 16, centre: (c.0 + 1, c.1), out_centre: (c.0 + 1, c.1), wa };
             let mut px = vec![0u8; (wa.0 * wa.1) as usize];
-            let mut t = Target { data: px.as_mut_ptr(), w: wa.0, h: wa.1, stride: wa.0 };
+            let mut t = Target { data: px.as_mut_ptr(), w: wa.0, h: wa.1, stride: wa.0, side: std::ptr::null_mut() };
             let n = 20;
             let t0 = std::time::Instant::now();
             for _ in 0..n {

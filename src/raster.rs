@@ -45,7 +45,7 @@ impl Src {
 pub enum Op {
     /// DisplayGfx::BlitBitmapClipped 0x56A700: `w` x `h` of a bitmap from its top-left, colour-
     /// keyed with `key` when `keyed`
-    Bitmap { x: i32, y: i32, w: i32, h: i32, src: Src, keyed: bool, key: u8, clip: Clip },
+    Bitmap { x: i32, y: i32, w: i32, h: i32, src: Src, keyed: bool, key: u8, clip: Clip, land: Option<LandTag> },
     /// DisplayGfx fill rectangle 0x56B810 / BitGrid fill 0x4F5D50: [x1, x2) x [y1, y2)
     Fill { x1: i32, y1: i32, x2: i32, y2: i32, colour: u8, clip: Clip },
     /// BitGrid::BlitSpriteRect 0x4F6910: `w` x `h` of `src` from (sx, sy) to (x, y); mode low
@@ -58,12 +58,26 @@ pub enum Op {
     VLine { x: i32, y1: i32, y2: i32, colour: u8 },
 }
 
-/// The framebuffer drawn into: `w` x `h` bytes, rows `stride` apart
+/// A landscape tile (land.rs): its top-left in the land, the land's size and its pixels at the
+/// game's start
+#[derive(Clone, Copy, Debug)]
+pub struct LandTag {
+    pub x0: i32,
+    pub y0: i32,
+    pub lw: i32,
+    pub lh: i32,
+    pub snap: *const u8,
+}
+
+/// The framebuffer drawn into: `w` x `h` bytes, rows `stride` apart. `side` (null: none), one
+/// u32 a pixel (rows `w` apart): 1 + the land pixel it shows when that is untouched since the
+/// start (a landscape tile's pixel equal to the start's), else 0
 pub struct Target {
     pub data: *mut u8,
     pub w: i32,
     pub h: i32,
     pub stride: i32,
+    pub side: *mut u32,
 }
 
 /// Zoom `zoom / 16` about WA's screen centre `centre`, landing on `out_centre`; WA's screen is
@@ -209,7 +223,12 @@ pub fn draw_mapped(op: &Op, t: &mut Target, view: &View) {
                 continue;
             }
             let row = unsafe { std::slice::from_raw_parts_mut(t.data.add((oy * t.stride + c0) as usize), xs.len()) };
-            draw_row(op, a, &xs, y, row);
+            if t.side.is_null() {
+                draw_row(op, a, &xs, y, row);
+            } else {
+                let side = unsafe { std::slice::from_raw_parts_mut(t.side.add((oy * t.w + c0) as usize), xs.len()) };
+                draw_row_side(op, a, &xs, y, row, side);
+            }
         }
     })
 }
@@ -324,6 +343,51 @@ fn draw_row(op: &Op, a: (i32, i32, i32, i32), xs: &[i32], y: i32, row: &mut [u8]
                     }
                 }),
                 _ => {}
+            }
+        }
+    }
+}
+
+/// `draw_row` keeping the side buffer: every pixel written gets 0 there, except an untouched
+/// land pixel from a landscape tile, which gets 1 + its index in the land
+fn draw_row_side(op: &Op, a: (i32, i32, i32, i32), xs: &[i32], y: i32, row: &mut [u8], side: &mut [u32]) {
+    match *op {
+        Op::Fill { colour, .. } | Op::Pixel { colour, .. } | Op::VLine { colour, .. } => {
+            row.fill(colour);
+            side.fill(0);
+        }
+        Op::Bitmap { x: bx, y: by, src, keyed, key, land, .. } => {
+            let sy = y - by;
+            let in_row = sy >= 0 && sy < src.h;
+            let srow = if in_row { unsafe { src.data.add((sy * src.stride) as usize) } } else { std::ptr::null() };
+            for k in 0..row.len() {
+                let c = xs[k] - bx;
+                let inside = in_row && (c as u32) < src.w as u32;
+                let s = if inside { unsafe { *srow.add(c as usize) } } else { 0 };
+                if keyed && s == key {
+                    continue;
+                }
+                row[k] = s;
+                side[k] = match land {
+                    Some(l) if inside && s != 0 => {
+                        let (lx, ly) = (l.x0 + c, l.y0 + sy);
+                        if lx < l.lw && ly < l.lh {
+                            let i = (ly * l.lw + lx) as usize;
+                            if unsafe { *l.snap.add(i) } == s { i as u32 + 1 } else { 0 }
+                        } else {
+                            0
+                        }
+                    }
+                    _ => 0,
+                };
+            }
+        }
+        Op::Grid { .. } => {
+            for k in 0..row.len() {
+                if let Some(v) = shade(op, a, xs[k], y, row[k]) {
+                    row[k] = v;
+                    side[k] = 0;
+                }
             }
         }
     }
