@@ -17,6 +17,8 @@ pub mod raster;
 mod hooks;
 #[cfg(all(windows, target_arch = "x86"))]
 mod log;
+#[cfg(all(windows, target_arch = "x86"))]
+mod present;
 
 #[cfg(all(windows, target_arch = "x86"))]
 mod dll {
@@ -55,6 +57,12 @@ mod dll {
             crate::log::line(&format!("wkVista.ini: ignored line: {b}"));
         }
         crate::log::line(&format!("settings: {cfg:?}"));
+        if cfg.truecolor {
+            match crate::present::install() {
+                Ok(()) => crate::log::line("true colour: Direct3D 9 Present hooked (shown when WA's renderer is a Direct3D 9 option)"),
+                Err(e) => crate::log::line(&format!("true colour unavailable: {e}")),
+            }
+        }
         match crate::hooks::install(cfg, dir) {
             Ok(()) => crate::log::line("hooks on: GameRender, RenderDrawingQueue, the 7 drawing functions, the camera clamp, the window procedure"),
             Err(e) => crate::log::line(&format!("NOT ACTIVE: {e}")),

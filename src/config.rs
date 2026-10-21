@@ -15,12 +15,14 @@ pub struct Config {
     pub zoom_max: i32,
     /// one CSV row per drawn frame (logs/render-NNN.csv)
     pub csv: bool,
+    /// wkVista shows its own RGBA frame (WA's renderer on a Direct3D 9 option)
+    pub truecolor: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         // numpad + / - / *, Scroll Lock
-        Config { wheel: true, key_zoom_in: 0x6B, key_zoom_out: 0x6D, key_zoom_reset: 0x6A, key_mark: 0x91, zoom_max: 64, csv: true }
+        Config { wheel: true, key_zoom_in: 0x6B, key_zoom_out: 0x6D, key_zoom_reset: 0x6A, key_mark: 0x91, zoom_max: 64, csv: true, truecolor: true }
     }
 }
 
@@ -38,6 +40,8 @@ key_mark = 0x91
 zoom_max = 64
 # one CSV row per drawn frame in logs/render-NNN.csv (1 = on)
 csv = 1
+# wkVista shows its own full-colour frame (1 = on; needs WA's renderer on a Direct3D 9 option)
+truecolor = 1
 ";
 
 fn num(v: &str) -> Option<i64> {
@@ -79,6 +83,7 @@ pub fn load(dir: &Path) -> (Config, Vec<String>) {
             ("key_mark", Some(n)) => c.key_mark = n as u32,
             ("zoom_max", Some(n)) => c.zoom_max = (n as i32).clamp(16, 128),
             ("csv", Some(n)) => c.csv = n != 0,
+            ("truecolor", Some(n)) => c.truecolor = n != 0,
             _ => bad.push(line.to_string()),
         }
     }

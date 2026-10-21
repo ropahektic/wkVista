@@ -280,12 +280,33 @@ extern "C" fn post() {
     guard((), || unsafe {
         let s = st();
         let Some(f) = s.frame.take() else { return };
+        // the frame as colours for the true colour output: WA's finished framebuffer through
+        // WA's display palette (DisplayGfx +0x358D: 256 x R, G, B, flags)
+        let t_rgba = Instant::now();
+        if s.cfg.truecolor && !f.target.data.is_null() && f.display != 0 {
+            let mut pal = [0u32; 256];
+            for (k, c) in pal.iter_mut().enumerate() {
+                let p = (f.display + 0x358D + 4 * k) as *const u8;
+                *c = (*p as u32) << 16 | (*p.add(1) as u32) << 8 | *p.add(2) as u32;
+            }
+            let (w, h, stride) = (f.target.w as usize, f.target.h as usize, f.target.stride as usize);
+            crate::present::fill(w as u32, h as u32, |px| {
+                for y in 0..h {
+                    let src = std::slice::from_raw_parts(f.target.data.add(y * stride), w);
+                    for (o, &i) in px[y * w..(y + 1) * w].iter_mut().zip(src) {
+                        *o = pal[i as usize];
+                    }
+                }
+            });
+            crate::present::SHOW.store(true, Ordering::Relaxed);
+        }
+        let ms_rgba = t_rgba.elapsed().as_secs_f64() * 1e3;
         let ms = f.t0.elapsed().as_secs_f64() * 1e3;
         let mark = PENDING_MARK.swap(0, Ordering::Relaxed);
         if s.cfg.csv {
             let k = f.kinds;
             log::row(&format!(
-                "{},{},{ms:.2},{:.2},{},{},{},{},{},{},{},{},{}",
+                "{},{},{ms:.2},{:.2},{ms_rgba:.2},{},{},{},{},{},{},{},{},{}",
                 s.last_frame, f.view.zoom, f.t_zoomed, f.zoomed, f.by_wa, f.refused, k[0], k[1], k[2], k[3], k[4],
                 if mark != 0 { mark.to_string() } else { String::new() }
             ));
@@ -513,7 +534,7 @@ extern "C" fn h_clamp(r: &mut Regs) -> u32 {
 static mut O_WNDPROC: usize = 0;
 
 /// in game: a GameRender in the last half second (the frontend never renders a game)
-fn in_game() -> bool {
+pub(crate) fn in_game() -> bool {
     now_ms().wrapping_sub(LAST_RENDER.load(Ordering::Relaxed)) < 500
 }
 
