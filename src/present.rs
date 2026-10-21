@@ -234,7 +234,7 @@ extern "C" fn h_show(r: &mut Regs) -> u32 {
         // called the same way)
         let dev = *((r.ecx as usize + 0x40) as *const usize);
         if dev == 0 || *(dev as *const usize) == 0 {
-            return Ok(false);
+            return Ok::<bool, String>(false);
         }
         // a lost device: our surface freed (a reset needs every default-pool resource gone),
         // then WA's own step (it resets the device)
